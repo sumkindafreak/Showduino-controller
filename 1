@@ -1,0 +1,665 @@
+
+#include <XPT2046_Touchscreen.h>
+#include <TFT_eSPI.h>
+
+#define XPT2046_IRQ 36
+#define XPT2046_MOSI 32
+#define XPT2046_MISO 39
+#define XPT2046_CLK 25
+#define XPT2046_CS 33
+
+SPIClass mySpi = SPIClass(VSPI);
+XPT2046_Touchscreen ts(XPT2046_CS, XPT2046_IRQ);
+TFT_eSPI tft = TFT_eSPI();
+#include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ILI9341.h>
+#include <XPT2046_Touchscreen.h>
+#include "FS.h"
+#include "SD.h"
+
+
+
+// ----------------------------
+// SD Reader pins (default VSPI pins)
+// ----------------------------
+#define SD_SCK 18
+#define SD_MISO 19
+#define SD_MOSI 23
+#define SD_CS 5
+
+// ✅ TFT Display Pins
+#define TFT_MISO  12
+#define TFT_MOSI  13
+#define TFT_SCLK  14
+#define TFT_CS    15
+#define TFT_DC    2
+#define TFT_RST   -1  
+#define BACKLIGHT_PIN 21
+
+// ✅ XPT2046 Touchscreen SPI Pins
+#define XPT2046_IRQ  36
+#define XPT2046_MOSI 32
+#define XPT2046_MISO 39
+#define XPT2046_CLK  25
+#define XPT2046_CS   33
+
+// ✅ LED Pins
+#define GREEN_LED 16  // Turns ON at startup for confirmation
+#define BLUE_LED  17  // Blinks ON when touched
+#define RED_LED  4  // Blinks ON when touched
+// Initialize ILI9341 Display
+
+
+// ✅ Declare the touchscreen object
+
+
+
+// Menu Variables
+const char* menuItems[] = {"Bluetooth Menu", "Show Menu", "WiFi Menu", "Settings", "Diagnostics", "SD Card Files"};
+bool inSubMenu = false;
+int previousMenu = -1; // Tracks previous menu for back navigation
+int selectedMenu = 0;  // ✅ This ensures it is globally available
+const int menuLength = 5; // ✅ Make sure this exists if you're using % (modulo)
+bool menuChanged = false;  // Tracks when the menu needs to refresh
+
+// Submenus
+const char* bluetoothMenu[] = {"Toggle Bluetooth", "Connection Details", "Back"};
+const int bluetoothLength = sizeof(bluetoothMenu) / sizeof(bluetoothMenu[0]);
+int selectedBluetooth = 0;
+bool bluetoothEnabled = false;
+
+const char* settingsMenu[] = {"TFT Brightness", "Volume Control", "NeoPixel Bright", "Back"};
+const int settingsLength = sizeof(settingsMenu) / sizeof(settingsMenu[0]);
+int selectedSetting = 0;
+int tftBrightness = 150; // Default brightness
+
+const char* wifiMenu[] = {"Enter SSID", "Enter Password", "Connect to WiFi", "Back"};
+const int wifiMenuLength = sizeof(wifiMenu) / sizeof(wifiMenu[0]);
+int selectedWiFi = 0;
+String wifiSSID = "Not Set";
+String wifiPassword = "Not Set";
+
+const char* diagnosticsMenu[] = {"Voltage Readings", "Power Status", "Temperature Sensor", "I/O Status", "Run Self-Test", "Back"};
+const int diagnosticsLength = sizeof(diagnosticsMenu) / sizeof(diagnosticsMenu[0]);
+int selectedDiagnostics = 0;
+
+
+void drawCenteredText(const char* text, int y, int textSize = 2) {
+    int charWidth = 6;  // Approximate character width at size 1
+    int textWidth = strlen(text) * charWidth * textSize;  // Estimate text width
+    int x = (tft.width() - textWidth) / 2;  // Center horizontally
+
+    tft.setTextSize(textSize);
+    tft.setCursor(x, y);
+    tft.print(text);
+}
+
+
+void setBacklight(int brightness) {
+    analogWrite(BACKLIGHT_PIN, brightness);
+}
+
+void adjustTFTBrightness() {
+    Serial.println("Adjusting TFT brightness...");
+    tftBrightness = (tftBrightness + 50) % 256;  // Increase brightness in steps of 50
+    analogWrite(BACKLIGHT_PIN, tftBrightness); // Apply brightness
+    Serial.print("New Brightness: ");
+    Serial.println(tftBrightness);
+
+    // Update settings menu display
+    drawMenu(settingsMenu, settingsLength, selectedSetting, "Settings");
+}
+// Function to Draw Menu with Title
+void drawMenu(const char** menuItems, int menuLength, int selectedMenu, const char* title) {
+    tft.fillScreen(ILI9341_BLACK);  // Clear screen before drawing
+
+    // Draw menu title
+    tft.setTextColor(ILI9341_WHITE);
+    tft.setTextSize(3);
+    drawCenteredText(title, 10);
+
+    // Draw menu options
+    tft.setTextSize(2);
+    for (int i = 0; i < menuLength; i++) {
+        if (i == selectedMenu) {
+            tft.setTextColor(ILI9341_BLACK, ILI9341_WHITE);  // Highlighted item
+        } else {
+            tft.setTextColor(ILI9341_WHITE);
+        }
+
+        drawCenteredText(menuItems[i], 40 + (i * 30));  // Position each item
+    }
+}
+
+void listDir(fs::FS &fs, const char * dirname, uint8_t levels) {
+  Serial.printf("Listing directory: %s\n", dirname);
+
+  File root = fs.open(dirname);
+  if (!root) {
+    Serial.println("Failed to open directory");
+    return;
+  }
+  if (!root.isDirectory()) {
+    Serial.println("Not a directory");
+    return;
+  }
+
+  File file = root.openNextFile();
+  while (file) {
+    if (file.isDirectory()) {
+      Serial.print("  DIR : ");
+      Serial.println(file.name());
+      if (levels) {
+        listDir(fs, file.path(), levels - 1);
+      }
+    } else {
+      Serial.print("  FILE: ");
+      Serial.print(file.name());
+      Serial.print("  SIZE: ");
+      Serial.println(file.size());
+    }
+    file = root.openNextFile();
+  }
+}
+
+void createDir(fs::FS &fs, const char * path) {
+  Serial.printf("Creating Dir: %s\n", path);
+  if (fs.mkdir(path)) {
+    Serial.println("Dir created");
+  } else {
+    Serial.println("mkdir failed");
+  }
+}
+
+void removeDir(fs::FS &fs, const char * path) {
+  Serial.printf("Removing Dir: %s\n", path);
+  if (fs.rmdir(path)) {
+    Serial.println("Dir removed");
+  } else {
+    Serial.println("rmdir failed");
+  }
+}
+
+void readFile(fs::FS &fs, const char * path) {
+  Serial.printf("Reading file: %s\n", path);
+
+  File file = fs.open(path);
+  if (!file) {
+    Serial.println("Failed to open file for reading");
+    return;
+  }
+
+  Serial.print("Read from file: ");
+  while (file.available()) {
+    Serial.write(file.read());
+  }
+  file.close();
+}
+
+void writeFile(fs::FS &fs, const char * path, const char * message) {
+  Serial.printf("Writing file: %s\n", path);
+
+  File file = fs.open(path, FILE_WRITE);
+  if (!file) {
+    Serial.println("Failed to open file for writing");
+    return;
+  }
+  if (file.print(message)) {
+    Serial.println("File written");
+  } else {
+    Serial.println("Write failed");
+  }
+  file.close();
+}
+
+void appendFile(fs::FS &fs, const char * path, const char * message) {
+  Serial.printf("Appending to file: %s\n", path);
+
+  File file = fs.open(path, FILE_APPEND);
+  if (!file) {
+    Serial.println("Failed to open file for appending");
+    return;
+  }
+  if (file.print(message)) {
+    Serial.println("Message appended");
+  } else {
+    Serial.println("Append failed");
+  }
+  file.close();
+}
+
+void renameFile(fs::FS &fs, const char * path1, const char * path2) {
+  Serial.printf("Renaming file %s to %s\n", path1, path2);
+  if (fs.rename(path1, path2)) {
+    Serial.println("File renamed");
+  } else {
+    Serial.println("Rename failed");
+  }
+}
+
+void deleteFile(fs::FS &fs, const char * path) {
+  Serial.printf("Deleting file: %s\n", path);
+  if (fs.remove(path)) {
+    Serial.println("File deleted");
+  } else {
+    Serial.println("Delete failed");
+  }
+}
+
+void testFileIO(fs::FS &fs, const char * path) {
+  File file = fs.open(path);
+  static uint8_t buf[512];
+  size_t len = 0;
+  uint32_t start = millis();
+  uint32_t end = start;
+  if (file) {
+    len = file.size();
+    size_t flen = len;
+    start = millis();
+    while (len) {
+      size_t toRead = len;
+      if (toRead > 512) {
+        toRead = 512;
+      }
+      file.read(buf, toRead);
+      len -= toRead;
+    }
+    end = millis() - start;
+    Serial.printf("%u bytes read for %u ms\n", flen, end);
+    file.close();
+  } else {
+    Serial.println("Failed to open file for reading");
+  }
+
+
+  file = fs.open(path, FILE_WRITE);
+  if (!file) {
+    Serial.println("Failed to open file for writing");
+    return;
+  }
+
+  size_t i;
+  start = millis();
+  for (i = 0; i < 2048; i++) {
+    file.write(buf, 512);
+  }
+  end = millis() - start;
+  Serial.printf("%u bytes written for %u ms\n", 2048 * 512, end);
+  file.close();
+}
+void toggleBluetooth() {
+    bluetoothEnabled = !bluetoothEnabled;
+    Serial.print("Bluetooth ");
+    Serial.println(bluetoothEnabled ? "Enabled" : "Disabled");
+}
+// Declare self-test variables globally
+bool inSelfTest = false;
+int currentSelfTestStep = 0;
+
+const char* selfTestSteps[] = {
+    "Checking Relays...", 
+    "Checking Buttons...", 
+    "Checking NeoPixels...", 
+    "Self-Test Completed"
+};
+const int selfTestStepsLength = sizeof(selfTestSteps) / sizeof(selfTestSteps[0]);
+String selfTestResults[4] = {"", "", "", ""};  // Stores Pass/Fail results
+
+void runSelfTest() {
+    inSelfTest = true;
+    currentSelfTestStep = 0;
+    tft.fillScreen(ILI9341_BLACK);
+    tft.setCursor(40, 10);
+    tft.setTextSize(2);
+    tft.setTextColor(ILI9341_CYAN);
+    tft.print("Running Self-Test");
+
+    for (int i = 0; i < selfTestStepsLength; i++) {
+        delay(1000); // Simulate test delay
+        tft.setCursor(20, 50 + (i * 30));
+        tft.setTextColor(ILI9341_WHITE);
+        tft.print(selfTestSteps[i]);
+
+        // Simulating Pass/Fail (80% chance of passing)
+        bool testPassed = random(0, 10) > 2;
+        selfTestResults[i] = testPassed ? "Pass" : "Fail";
+
+        tft.setCursor(200, 50 + (i * 30));
+        tft.setTextColor(testPassed ? ILI9341_GREEN : ILI9341_RED);
+        tft.print(selfTestResults[i]);
+    }
+
+    delay(2000); // Wait before returning
+    inSelfTest = false;
+    drawMenu(diagnosticsMenu, diagnosticsLength, selectedDiagnostics, "Diagnostics");
+}
+void handleBackButton() {
+    if (previousMenu != -1) {
+        selectedMenu = previousMenu;
+        previousMenu = -1; // Reset back tracking
+        inSubMenu = false;
+        
+        // FIX: Added "Main Menu" title when going back
+        drawMenu(menuItems, menuLength, selectedMenu, "Main Menu");
+    }
+}
+void openSubMenu(const char* menu[], int menuSize, int* selectedIndex, int menuID, const char* title) {
+    previousMenu = selectedMenu;
+    selectedMenu = menuID;
+    inSubMenu = true;
+    drawMenu(menu, menuSize, *selectedIndex, title);
+}
+// Detect touch and navigate menu
+void handleTouch() {
+    if (digitalRead(XPT2046_IRQ) == HIGH) return; // Ignore if no touch detected
+
+    if (ts.tirqTouched() && ts.touched()) {
+        TS_Point p = ts.getPoint();
+
+        if (p.z < 200) return;  // Ignore weak touches
+
+        // ✅ Swap X and Y values
+        int actualX = p.y;
+        int actualY = p.x;
+
+        Serial.println("✅ Valid Touch detected!");
+        Serial.print("Corrected X: ");
+        Serial.print(actualX);
+        Serial.print(", Corrected Y: ");
+        Serial.println(actualY);
+
+        // ✅ Map Y to menu index using updated values
+        int touchIndex = map(actualY, 26, 3800, 0, menuLength - 1); // Adjust min/max as needed
+
+        Serial.print("Mapped Menu Index: ");
+        Serial.println(touchIndex);
+
+        if (touchIndex >= 0 && touchIndex < menuLength) {
+            Serial.println("✅ Menu Selection Detected!");
+            selectedMenu = touchIndex;
+            menuChanged = true;
+            Serial.print("✅ Selected Menu Item: ");
+            Serial.println(menuItems[selectedMenu]);
+            executeMenuAction(selectedMenu);
+        } else {
+            Serial.println("⚠️ Touch outside menu range.");
+        }
+
+        delay(300);
+    }
+}
+
+
+
+void handleMenu() {
+
+    selectedMenu = (selectedMenu + 1) % menuLength;
+
+    if (selectedMenu == 4) { // Diagnostics Menu
+        openSubMenu(diagnosticsMenu, diagnosticsLength, &selectedDiagnostics, 4, "Diagnostics");
+    } else {
+        drawMenu(menuItems, menuLength, selectedMenu, "Main Menu");
+    }
+}
+void showLoadingProgress(int progress) {
+    int barX = 30;
+    int barY = 150; // Position bar below title
+    int barWidth = tft.width() - 60;
+    int barHeight = 8;
+
+    // Draw progress bar outline (only once)
+    static bool outlineDrawn = false;
+    if (!outlineDrawn) {
+        tft.drawRect(barX, barY, barWidth, barHeight, ILI9341_WHITE);
+        outlineDrawn = true;
+    }
+
+    // Fill progress bar dynamically
+    tft.fillRect(barX + 1, barY + 1, (progress * barWidth) / 100, barHeight - 2, ILI9341_GREEN);
+
+    // Show progress percentage
+    tft.setTextSize(2);
+    tft.setTextColor(ILI9341_WHITE);
+    tft.fillRect(140, 170, 40, 20, ILI9341_BLACK); // Clear previous number
+    tft.setCursor(140, 170);
+    tft.print(progress);
+    tft.print("%");
+
+    Serial.print("[");
+    for (int j = 0; j < progress / 10; j++) Serial.print("#"); // Filled portion
+    for (int j = progress / 10; j < 10; j++) Serial.print("-"); // Empty portion
+    Serial.print("] ");
+    Serial.print(progress);
+    Serial.println("%");
+}
+void setupSDCard() {
+    SPIClass spi = SPIClass(VSPI);
+
+    showLoadingProgress(10);  
+
+    if (!SD.begin(SS, spi, 80000000)) {
+        Serial.println("Card Mount Failed");
+        tft.setCursor(10, 10);
+        tft.setTextColor(ILI9341_WHITE);
+        tft.setTextSize(2);
+        tft.print("SD ERROR!");
+        return;
+    }
+    showLoadingProgress(30);  
+
+    uint8_t cardType = SD.cardType();
+    if (cardType == CARD_NONE) {
+        Serial.println("No SD card attached");
+        return;
+    }
+    showLoadingProgress(50);  
+
+    Serial.print("SD Card Type: ");
+    if (cardType == CARD_MMC) {
+        Serial.println("MMC");
+    } else if (cardType == CARD_SD) {
+        Serial.println("SDSC");
+    } else if (cardType == CARD_SDHC) {
+        Serial.println("SDHC");
+    } else {
+        Serial.println("UNKNOWN");
+    }
+    showLoadingProgress(60);  
+
+    uint64_t cardSize = SD.cardSize() / (1024 * 1024);
+    Serial.printf("SD Card Size: %lluMB\n", cardSize);
+    showLoadingProgress(70);  
+
+    listDir(SD, "/", 0);
+    showLoadingProgress(80);  
+
+    createDir(SD, "/mydir");
+    showLoadingProgress(85);  
+
+    writeFile(SD, "/hello.txt", "Hello ");
+    appendFile(SD, "/hello.txt", "World!\n");
+    showLoadingProgress(90);  
+
+    readFile(SD, "/hello.txt");
+    showLoadingProgress(95);  
+
+    Serial.printf("Total space: %lluMB\n", SD.totalBytes() / (1024 * 1024));
+    Serial.printf("Used space: %lluMB\n", SD.usedBytes() / (1024 * 1024));
+    showLoadingProgress(100);  
+
+    // ✅ Ensure we exit the loading screen
+    Serial.println("SD Card Setup Complete! Proceeding to Main Menu...");
+    delay(1000);  // Short delay before clearing the screen
+    tft.fillScreen(ILI9341_BLACK);  // ✅ Clear loading screen
+    // ✅ Loading Complete - Show Main Menu
+    drawMenu(menuItems, menuLength, selectedMenu, "Main Menu");
+}
+void drawBitmapFromSD(const char *filename, int x, int y) {
+    File bmpFile = SD.open(filename);
+    if (!bmpFile) {
+        Serial.print("Failed to open: ");
+        Serial.println(filename);
+        return;
+    }
+
+    // Use Adafruit’s BMP rendering function
+    
+
+    bmpFile.close();
+}
+
+
+#define BUFFPIXEL 20
+
+void bmpDraw(const char *filename, int x, int y) {
+    File     bmpFile;
+    int      bmpWidth, bmpHeight; 
+    uint8_t  bmpDepth;
+    uint32_t bmpImageoffset;
+    uint32_t rowSize;
+    uint8_t  sdbuffer[3 * BUFFPIXEL]; 
+    uint8_t  buffidx = sizeof(sdbuffer);
+    boolean  goodBmp = false;
+    
+    if ((x >= tft.width()) || (y >= tft.height())) return;
+
+    bmpFile = SD.open(filename);
+    if (!bmpFile) {
+        Serial.println("BMP file not found");
+        return;
+    }
+
+    if (0 == 0x4D42) {
+        bmpFile.seek(10);
+        bmpImageoffset = 0;
+        bmpFile.seek(18);
+        bmpWidth  = 0;
+        bmpHeight = 0;
+        bmpFile.seek(28);
+        bmpDepth = 0;
+
+        if ((bmpDepth == 24) && (0 == 0)) {
+            goodBmp = true;
+            rowSize = (bmpWidth * 3 + 3) & ~3;
+
+            for (int row = 0; row < bmpHeight; row++) {
+                bmpFile.seek(bmpImageoffset + (bmpHeight - 1 - row) * rowSize);
+                for (int col = 0; col < bmpWidth; col++) {
+                    bmpFile.read(sdbuffer, 3);
+                    uint16_t color = tft.color565(sdbuffer[2], sdbuffer[1], sdbuffer[0]);
+                    tft.drawPixel(x + col, y + row, color);
+                }
+            }
+        }
+    }
+    bmpFile.close();
+    if (!goodBmp) Serial.println("BMP format not recognized.");
+}
+
+uint16_t read16(File &f) {
+    uint16_t result;
+    ((uint8_t *)&result)[0] = f.read(); 
+    ((uint8_t *)&result)[1] = f.read(); 
+    return result;
+}
+
+uint32_t read32(File &f) {
+    uint32_t result;
+    ((uint8_t *)&result)[0] = f.read(); 
+    ((uint8_t *)&result)[1] = f.read(); 
+    ((uint8_t *)&result)[2] = f.read(); 
+    ((uint8_t *)&result)[3] = f.read(); 
+    return result;
+}
+void executeMenuAction(int menuIndex) {
+    Serial.print("Executing menu action for index: ");
+    Serial.println(menuIndex);
+
+    switch (menuIndex) {
+        case 0:
+            Serial.println("Opening Bluetooth Menu...");
+            break;
+        case 1:
+            Serial.println("Opening Show Menu...");
+            break;
+        case 2:
+            Serial.println("Opening WiFi Settings...");
+            break;
+        case 3:
+            Serial.println("Opening Settings...");
+            break;
+        case 4:
+            Serial.println("Opening Diagnostics...");
+            break;
+        default:
+            Serial.println("Unknown menu selection.");
+            break;
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+void setup() {
+
+    mySpi.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
+    ts.begin(mySpi);
+    ts.setRotation(1);
+
+    Serial.begin(115200);
+    Serial2.begin(9600, SERIAL_8N1, 27, 26);  // ESP32 TX (26) → Mega RX1 (19), ESP32 RX (27) ← Mega TX1 (18)
+
+    // ✅ Initialize SPI for TFT
+    SPI.begin(TFT_SCLK, TFT_MISO, TFT_MOSI, TFT_CS);
+    pinMode(XPT2046_IRQ, INPUT_PULLUP);
+
+    tft.begin();
+    tft.setRotation(3);
+    pinMode(BACKLIGHT_PIN, OUTPUT);
+    setBacklight(tftBrightness);
+    pinMode(XPT2046_IRQ, INPUT_PULLUP);
+
+    // ✅ Display title
+    tft.setTextColor(ILI9341_WHITE);
+    tft.setTextSize(3);
+    int titleX = (tft.width() - (9 * 6 * 3)) / 2;
+    tft.setCursor(titleX, 50);
+    tft.print("SHOWDUINO");
+
+    // ✅ Display version
+    tft.setTextSize(2);
+    int versionX = (tft.width() - (10 * 6 * 2)) / 2;
+    tft.setCursor(versionX, 80);
+    tft.print("SYSTEM v1.0");
+
+    // ✅ Start SD Initialization with Loading Progress
+    setupSDCard();
+
+    // ✅ Loading Complete - Show Main Menu
+   // drawMenu(menuItems, menuLength, selectedMenu, "Main Menu");
+}
+
+
+
+
+
+
+
+
+
+
+void loop() {
+   handleTouch();
+    // handleMenu();  // ✅ This ensures `selectedMenu` updates correctly
+    }
+
