@@ -1,0 +1,625 @@
+#include <Adafruit_NeoPixel.h>
+#include <BluetoothSerial.h>  // For ESP32 Internal Bluetooth
+
+#define LED_PIN 2       // Pin connected to NeoPixels
+#define NUM_PIXELS 7    // Number of NeoPixels in the lantern
+
+BluetoothSerial SerialBT;    // Create Bluetooth instance for ESP32
+Adafruit_NeoPixel lantern(NUM_PIXELS, LED_PIN, NEO_GRB + NEO_KHZ800);
+String incomingData;
+
+#define TEST_DURATION 8000  // Time each effect runs (in ms)
+
+
+
+// Function Prototypes
+void flickerEffect(int speed);
+void glowEffect(uint8_t red, uint8_t green, uint8_t blue, int speed);
+void colorShiftEffect(int speed);
+void blackoutEffect();
+void strobeEffect(int speed, int count);
+void fadeOnEffect(int red, int green, int blue, int speed);
+void fadeOffEffect(int red, int green, int blue, int speed);
+void pulseEffect(int red, int green, int blue, int speed);
+void fireflyEffect(int red, int green, int blue, int speed);
+void flameDanceEffect(int speed);
+void lightningEffect(int speed);
+void candleDripEffect(int red, int green, int blue, int speed);
+void emberBurnEffect(int speed);
+void bloodDripEffect(int speed);
+void electricalSurgeEffect(int speed);
+void ghostlyPulseEffect(int speed);
+void infernoEffect(int speed);
+void mistEffect(int speed);
+void pumpkinFlickerEffect(int speed);
+void policeStrobeEffect(int speed);
+void eyesWatchingEffect(int speed);
+void smolderingEmbersEffect(int speed);
+void explosionBurstEffect(int speed);
+void dimensionalRiftEffect(int speed);
+void witchesBrewEffect(int speed);
+void viralOutbreakEffect(int speed);
+void hellfireEffect(int speed);
+void drowningEffect(int speed);
+void skullFlickerEffect(int speed);
+void lanternGlowEffect(int speed);
+void totalDarknessEffect(int speed);
+void zombieCreepEffect(int speed);
+void spiderWebEffect(int speed);
+void magneticPulseEffect(int speed);
+void starburstEffect(int speed);
+void shadowCreepEffect(int speed);
+void iceStormEffect(int speed);
+void graveyardGlowEffect(int speed);
+
+
+void setup() {
+    Serial.begin(9600);    // USB Serial for debugging
+    SerialBT.begin("Lantern_BT");  // Initialize Bluetooth for ESP32
+    lantern.begin();        // Initialize NeoPixels
+    lantern.clear();        // Clear lantern on startup
+    lantern.show();
+}
+
+void loop() {
+
+
+    // Check for incoming Bluetooth data
+    if (SerialBT.available()) {
+        incomingData = SerialBT.readString();
+        incomingData.trim();
+        handleCommand(incomingData);
+    }
+
+}
+
+
+
+
+void handleCommand(String command) {
+    static int strobeSpeed = 50;
+    static int strobeCount = 10;
+    if (command == "FLICKER") {
+        flickerEffect(strobeSpeed);
+    } else if (command.startsWith("GLOW")) {
+        int values[3] = {0};
+        int comma1 = command.indexOf(',', 5);
+        int comma2 = command.indexOf(',', comma1 + 1);
+        int comma3 = command.indexOf(',', comma2 + 1);
+        if (comma1 != -1 && comma2 != -1 && comma3 != -1) {
+            values[0] = command.substring(5, comma1).toInt();
+            values[1] = command.substring(comma1 + 1, comma2).toInt();
+            values[2] = command.substring(comma2 + 1, comma3).toInt();
+            glowEffect(values[0], values[1], values[2], strobeSpeed);
+        } else {
+            Serial.println("Invalid GLOW command format.");
+        }
+    } else if (command == "COLORSHIFT") {
+        colorShiftEffect(strobeSpeed);
+    } else if (command == "BLACKOUT") {
+        blackoutEffect();
+    } else if (command == "BLOODDRIP") {
+        bloodDripEffect(strobeSpeed);
+
+    } else if (command == "SURGE") {
+        electricalSurgeEffect(strobeSpeed);
+
+    } else if (command == "GHOST") {
+        ghostlyPulseEffect(strobeSpeed);
+
+    } else if (command == "INFERNO") {
+        infernoEffect(strobeSpeed);
+
+    } else if (command == "MIST") {
+        mistEffect(strobeSpeed);
+
+    } else if (command == "PUMPKIN") {
+        pumpkinFlickerEffect(strobeSpeed);
+
+    } else if (command == "POLICE") {
+        policeStrobeEffect(strobeSpeed);
+
+    } else if (command == "EYES") {
+        eyesWatchingEffect(strobeSpeed);
+
+    } else if (command == "SMOLDER") {
+        smolderingEmbersEffect(strobeSpeed);
+
+    } else if (command == "RIFT") {
+        dimensionalRiftEffect(strobeSpeed);
+
+    } else if (command == "BREW") {
+        witchesBrewEffect(strobeSpeed);
+
+    } else if (command == "VIRUS") {
+        viralOutbreakEffect(strobeSpeed);
+
+    } else if (command == "HELLFIRE") {
+        hellfireEffect(strobeSpeed);
+
+    } else if (command == "DROWN") {
+        drowningEffect(strobeSpeed);
+
+    } else if (command == "SKULL") {
+        skullFlickerEffect(strobeSpeed);
+
+    } else if (command == "LANTERN") {
+        lanternGlowEffect(strobeSpeed);
+
+    } else if (command == "DARKNESS") {
+        totalDarknessEffect(strobeSpeed);
+
+    } else if (command == "ZOMBIE") {
+        zombieCreepEffect(strobeSpeed);
+
+    } else if (command == "SPIDER") {
+        spiderWebEffect(strobeSpeed);
+}
+
+else if (command == "MAGNETIC") {
+    magneticPulseEffect(strobeSpeed);
+} else if (command == "STARBURST") {
+    starburstEffect(strobeSpeed);
+} else if (command == "SHADOW") {
+    shadowCreepEffect(strobeSpeed);
+} else if (command == "ICESTORM") {
+    iceStormEffect(strobeSpeed);
+} else if (command == "GRAVEYARD") {
+    graveyardGlowEffect(strobeSpeed);
+} else if (command == "EXPLOSION") {
+        explosionBurstEffect(strobeSpeed);
+
+    } else if (command.startsWith("STROBE")) {
+        int comma1 = command.indexOf(',');
+        int comma2 = command.lastIndexOf(',');
+        if (comma1 != -1) strobeSpeed = command.substring(comma1 + 1, comma2).toInt();
+        if (comma2 != -1) strobeCount = command.substring(comma2 + 1).toInt();
+        strobeEffect(strobeSpeed, strobeCount);
+
+    } else {
+        Serial.println("Unknown command received.");
+    }
+}
+
+
+
+
+
+
+/* ---------------------------------- */
+/* Effects Code Below                 */
+/* ---------------------------------- */
+
+
+
+//RUNS ONCE
+void fadeOnEffect(int red, int green, int blue, int speed) {
+    for (int brightness = 0; brightness <= 255; brightness += 5) {
+        for (int i = 0; i < NUM_PIXELS; i++) {
+            lantern.setPixelColor(i, lantern.Color(
+                (red * brightness) / 255,
+                (green * brightness) / 255,
+                (blue * brightness) / 255
+            ));
+        }
+        lantern.show();
+        delay(speed);
+    }
+}
+//RUNS ONCE
+void fadeOffEffect(int red, int green, int blue, int speed) {
+    for (int brightness = 255; brightness >= 0; brightness -= 5) {
+        for (int i = 0; i < NUM_PIXELS; i++) {
+            lantern.setPixelColor(i, lantern.Color(
+                (red * brightness) / 255,
+                (green * brightness) / 255,
+                (blue * brightness) / 255
+            ));
+        }
+        lantern.show();
+        delay(speed);
+    }
+}
+
+void electricalSurgeEffect(int speed) {
+    const int flickerCount = 5; // Set flicker count here (adjust as needed)
+
+    for (int i = 0; i < flickerCount; i++) {
+        for (int j = 0; j < NUM_PIXELS; j++) {
+            lantern.setPixelColor(j, lantern.Color(255, 255, 255)); // Bright white flash
+        }
+        lantern.show();
+        delay(speed);
+
+        lantern.clear(); // Darkness between flashes
+        lantern.show();
+        delay(random(50, 200));
+    }
+}
+
+
+void lanternGlowEffect(int speed) {
+    static int brightness = 100;
+    static int direction = 5;
+
+    brightness += direction;
+    if (brightness >= 200 || brightness <= 50) direction *= -1;
+
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        lantern.setPixelColor(i, lantern.Color((brightness * 255) / 200, (brightness * 150) / 200, 0));
+    }
+
+    lantern.show();
+    delay(speed);
+}
+
+
+void flickerEffect(int speed) {
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        int flicker = random(100, 255); // Random flicker brightness
+        lantern.setPixelColor(i, lantern.Color(flicker, random(30, 80), 0));
+    }
+    lantern.show();
+    delay(speed); 
+}
+
+void glowEffect(uint8_t red, uint8_t green, uint8_t blue, int speed) {
+    static float brightness = 30;
+    static float direction = 3;
+
+    brightness += direction;
+    if (brightness >= 255 || brightness <= 30) direction *= -1;
+
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        lantern.setPixelColor(i, lantern.Color(
+            (red * brightness) / 255, 
+            (green * brightness) / 255, 
+            (blue * brightness) / 255
+        ));
+    }
+    lantern.show();
+    delay(speed);
+}
+
+void blackoutEffect() {
+    lantern.clear(); 
+    lantern.show();
+}
+
+void totalDarknessEffect(int speed) {
+    lantern.clear();
+    lantern.show();
+    delay(speed);
+}
+
+void strobeEffect(int speed, int count) {
+    Serial.print("Strobe Effect - Speed:"); Serial.print(speed);
+    Serial.print(" Count:"); Serial.println(count);
+    
+    for (int i = 0; i < count; i++) {
+        for (int j = 0; j < NUM_PIXELS; j++) {
+            lantern.setPixelColor(j, lantern.Color(255, 255, 255));
+        }
+        lantern.show();
+        delay(speed);
+
+        lantern.clear(); 
+        lantern.show();
+        delay(speed);
+    }
+}
+
+void colorShiftEffect(int speed) {
+    static int hue = 0;
+
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        lantern.setPixelColor(i, lantern.ColorHSV(hue, 255, 150)); // Smooth color shifting
+    }
+
+    hue += 200;  // Adjust this for faster or slower shifts
+    if (hue >= 65535) hue = 0; // Loop back when hue exceeds max value
+
+    lantern.show();
+    delay(speed);
+}
+
+
+void flameDanceEffect(int speed) {
+    Serial.print("Flame Dance Effect - Speed:"); Serial.println(speed);
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        lantern.setPixelColor(i, lantern.Color(random(200, 255), random(50, 150), 0));
+    }
+    lantern.show();
+    delay(speed);
+}
+
+void lightningEffect(int speed) {
+    Serial.print("Lightning Effect - Speed:"); Serial.println(speed);
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        lantern.setPixelColor(i, lantern.Color(255, 255, 255));
+    }
+    lantern.show();
+    delay(speed);
+    lantern.clear();
+    lantern.show();
+    delay(random(200, 600));
+}
+
+void emberBurnEffect(int speed) {
+    Serial.print("Ember Burn Effect - Speed:"); Serial.println(speed);
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        lantern.setPixelColor(i, lantern.Color(random(150, 255), random(20, 80), 0));
+    }
+    lantern.show();
+    delay(speed);
+}
+//RUNS ONCE
+void bloodDripEffect(int speed) {
+    lantern.clear();  // Clear before starting
+
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        lantern.setPixelColor(i, lantern.Color(150, 0, 0)); // Deep red for blood
+        lantern.show();
+        delay(speed);  // Control the drip speed
+    }
+
+    delay(500);  // Pause to allow the "drip" to linger
+}
+//RUNS ONCE WITH FLICKER COUNT
+void electricalSurgeEffect(int speed, int flickerCount) {
+    for (int i = 0; i < flickerCount; i++) {
+        for (int j = 0; j < NUM_PIXELS; j++) {
+            lantern.setPixelColor(j, lantern.Color(255, 255, 255)); // Bright white flash
+        }
+        lantern.show();
+        delay(speed);
+
+        lantern.clear(); // Darkness between flashes
+        lantern.show();
+        delay(random(50, 200));
+    }
+}
+
+
+void ghostlyPulseEffect(int speed) {
+    static int brightness = 0;
+    static int direction = 5;
+
+    brightness += direction;
+    if (brightness >= 150 || brightness <= 10) direction *= -1;
+
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        lantern.setPixelColor(i, lantern.Color((brightness * 150) / 255, 0, (brightness * 255) / 255));
+    }
+
+    lantern.show();
+    delay(speed);
+}
+
+void infernoEffect(int speed) {
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        lantern.setPixelColor(i, lantern.Color(random(200, 255), random(50, 100), 0));
+    }
+    lantern.show();
+    delay(speed);
+}
+
+void mistEffect(int speed) {
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        lantern.setPixelColor(i, lantern.Color(random(150, 255), random(200, 255), random(200, 255)));
+    }
+    lantern.show();
+    delay(speed);
+}
+
+void pumpkinFlickerEffect(int speed) {
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        lantern.setPixelColor(i, lantern.Color(random(200, 255), random(80, 100), 0));
+    }
+    lantern.show();
+    delay(random(speed / 2, speed * 2));
+}
+
+void policeStrobeEffect(int speed) {
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        lantern.setPixelColor(i, lantern.Color(255, 0, 0)); // Red first
+    }
+    lantern.show();
+    delay(speed);
+
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        lantern.setPixelColor(i, lantern.Color(0, 0, 255)); // Blue next
+    }
+    lantern.show();
+    delay(speed);
+}
+
+void eyesWatchingEffect(int speed) {
+    lantern.clear();
+    lantern.setPixelColor(0, lantern.Color(255, 0, 0));  // Left eye
+    lantern.setPixelColor(6, lantern.Color(255, 0, 0));  // Right eye
+    lantern.show();
+    delay(speed);
+    lantern.clear();
+    lantern.show();
+}
+
+
+void smolderingEmbersEffect(int speed) {
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        int ember = random(100, 200);
+        lantern.setPixelColor(i, lantern.Color(ember, ember / 4, 0));
+    }
+    lantern.show();
+    delay(speed);
+}
+// RUNS ONCE
+void explosionBurstEffect(int speed) {
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        lantern.setPixelColor(i, lantern.Color(255, 255, 255)); // Bright white burst
+    }
+    lantern.show();
+    delay(200); // Short burst
+    lantern.clear();
+    lantern.show();
+}
+
+//RUNS ONCE
+void dimensionalRiftEffect(int speed) {
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        lantern.setPixelColor(i, lantern.Color(random(0, 80), random(150, 255), random(200, 255)));
+    }
+    lantern.show();
+    delay(speed);
+}
+
+void witchesBrewEffect(int speed) {
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        lantern.setPixelColor(i, lantern.Color(random(60, 100), random(0, 150), random(150, 255)));
+    }
+    lantern.show();
+    delay(speed);
+}
+
+void viralOutbreakEffect(int speed) {
+    static int brightness = 50;
+    static int direction = 5;
+
+    brightness += direction;
+    if (brightness >= 255 || brightness <= 30) direction *= -1;
+
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        lantern.setPixelColor(i, lantern.Color(0, brightness, 0)); // Toxic green glow
+    }
+
+    lantern.show();
+    delay(speed);
+}
+
+void hellfireEffect(int speed) {
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        lantern.setPixelColor(i, lantern.Color(random(150, 255), random(0, 80), 0));
+    }
+    lantern.show();
+    delay(random(speed / 2, speed * 2));
+}
+// RUNS ONCE WITH SPEED SELECT
+void drowningEffect(int speed) {
+    for (int brightness = 0; brightness <= 255; brightness += 10) {
+        for (int i = 0; i < NUM_PIXELS; i++) {
+            lantern.setPixelColor(i, lantern.Color(0, 0, brightness)); // Deep blue fade
+        }
+        lantern.show();
+        delay(speed);
+    }
+}
+
+
+void skullFlickerEffect(int speed) {
+    lantern.clear();
+    lantern.setPixelColor(1, lantern.Color(180, 180, 255)); // Left Eye
+    lantern.setPixelColor(5, lantern.Color(180, 180, 255)); // Right Eye
+    lantern.show();
+    delay(random(speed / 2, speed * 2));
+    lantern.clear();
+    lantern.show();
+}
+
+void zombieCreepEffect(int speed) {
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        lantern.setPixelColor(i, lantern.Color(random(80, 150), random(100, 200), 0));
+    }
+    lantern.show();
+    delay(speed);
+}
+
+void spiderWebEffect(int speed) {
+    lantern.clear();
+    for (int i = 0; i < 3; i++) {
+        lantern.setPixelColor(random(NUM_PIXELS), lantern.Color(200, 200, 200));
+    }
+    lantern.show();
+    delay(speed);
+}
+// RUNS ONCE WITH SPEED
+void magneticPulseEffect(int speed) {
+    for (int i = 0; i < NUM_PIXELS / 2; i++) {
+        lantern.setPixelColor(3 + i, lantern.Color(255, 255, 255)); // Center outward
+        lantern.setPixelColor(3 - i, lantern.Color(255, 255, 255));
+        lantern.show();
+        delay(speed);
+    }
+    lantern.clear();
+    lantern.show();
+}
+
+// RUNS ONCE
+void starburstEffect(int speed) {
+    for (int i = 0; i < NUM_PIXELS / 2; i++) {
+        lantern.setPixelColor((NUM_PIXELS / 2) + i, lantern.Color(255, 255, 200));
+        lantern.setPixelColor((NUM_PIXELS / 2) - i, lantern.Color(255, 255, 200));
+        lantern.show();
+        delay(speed);
+    }
+
+    lantern.clear();
+    lantern.show();
+}
+
+
+void shadowCreepEffect(int speed) {
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        lantern.setPixelColor(i, lantern.Color(0, 0, 0)); // Darkness spreads
+        lantern.show();
+        delay(speed);
+    }
+
+    delay(500); // Hold darkness before reset
+    lantern.clear();
+    lantern.show();
+}
+
+void iceStormEffect(int speed) {
+    lantern.clear();
+    for (int i = 0; i < random(1, NUM_PIXELS); i++) {
+        lantern.setPixelColor(random(NUM_PIXELS), lantern.Color(0, 150, 255));
+    }
+    lantern.show();
+    delay(speed);
+
+    lantern.clear();
+    lantern.show();
+    delay(random(100, 400)); // Random storm gaps
+}
+// RUNS ONCE
+void graveyardGlowEffect(int speed) {
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        int flicker = random(80, 150);  // Dim greenish glow
+        lantern.setPixelColor(i, lantern.Color(0, flicker, 0));
+    }
+    lantern.show();
+    delay(speed);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
