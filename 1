@@ -1,121 +1,1181 @@
-#include <SPI.h>
-#include <XPT2046_Touchscreen.h>
-#include <TFT_eSPI.h>
+#include <Wire.h>                  // <-- Must come first
+#include <Adafruit_NeoPixel.h>
+#include <CuteBuzzerSounds.h>
+#include <SparkFunSX1509.h>
+#include <RTClib.h>
 
-#define XPT2046_IRQ 36
-#define XPT2046_MOSI 32
-#define XPT2046_MISO 39
-#define XPT2046_CLK 25
-#define XPT2046_CS 33
-
-SPIClass mySpi = SPIClass(VSPI);
-XPT2046_Touchscreen ts(XPT2046_CS, XPT2046_IRQ);
-
-TFT_eSPI tft = TFT_eSPI();
-
-// ** Menu Options (Removed SD Card Files) **
-const char* mainMenu[] = {"Bluetooth Menu", "Show Menu", "WiFi Menu", "Settings", "Diagnostics"};
-const int menuLength = sizeof(mainMenu) / sizeof(mainMenu[0]);  // **Updated menu length**
-int selectedMenu = -1;  
-
-// ** Spacing Adjustments **
-int menuSpacing = 30;  
-int firstMenuY = 50;   
-int backButtonY = 190;  
-bool inSubMenu = false;  
-
-// ** Global Variables for States **
-bool bluetoothEnabled = false;
-int brightnessLevel = 128;  // Default brightness (0-255)
+RTC_DS1307 rtc;  // clock
+SX1509 io;  // SX1509 instance
 
 
+// Pin Assignments
+#define PWR_OK_PIN A4       // Gray wire (Power Good Signal)
+#define VOLTAGE_12V A5     // Yellow wire (12V) - DISABLED UNTIL SENSOR ARRIVES
+#define VOLTAGE_5V A1      // Red wire (5V) - Direct Connection
+#define VOLTAGE_3V3 A2     // Orange wire (3.3V) - Direct Connection
+#define STANDBY_POWER A3   // Purple wire (5VSB - Standby Power)
+
+// Voltage Conversion Multiplier for 12V Sensor (DISABLED UNTIL SENSOR ARRIVES)
+float voltageMultiplier = 5.0 * (25.0 / 5.0) / 1023.0;
 
 
+#define BUZZER_PIN 48
+
+#define RELAY1_PIN 2
+#define RELAY2_PIN 3
+#define RELAY3_PIN 4
+#define RELAY4_PIN 5
+#define RELAY5_PIN 6
+#define RELAY6_PIN 7
+#define RELAY7_PIN 8
+#define RELAY8_PIN 9
 
 
 
+#define ESP32_MAIN Serial1      // For talking to ESP32 MAIN
+#define DEBUG       Serial    // For serial monitor/PC debugging
 
-// ** Draw Centered Text **
-void drawCenteredText(const char* text, int y, int textSize = 2) {
-    int charWidth = 6;
-    int textWidth = strlen(text) * charWidth * textSize;
-    int x = (tft.width() - textWidth) / 2;
 
-    tft.setTextSize(textSize);
-    tft.setCursor(x, y);
-    tft.print(text);
+// States and flags
+
+bool emergencyStopActive = false;
+bool startPressed = false;
+
+// Scenes and flags
+
+bool sceneActive = false;
+bool scene1Active = false;
+bool scene2Active = false;
+bool scene3Active = false;
+bool scene4Active = false;
+bool scene5Active = false;
+bool scene6Active = false;
+bool scene7Active = false;
+bool scene8Active = false;
+bool scene9Active = false;
+bool scene10Active = false;
+
+bool lastButtonState1 = HIGH;  // Previous state of ONESHOT1
+bool lastButtonState2 = HIGH;  // Previous state of ONESHOT2
+bool lastButtonState3 = HIGH;  // Previous state of ONESHOT3
+bool lastButtonState4 = HIGH;  // Previous state of ONESHOT4
+
+bool shot1State = HIGH;  // Current state of ONESHOT1
+bool shot2State = HIGH;  // Current state of ONESHOT2
+bool shot3State = HIGH;  // Current state of ONESHOT3
+bool shot4State = HIGH;  // Current state of ONESHOT4
+
+
+// machine/scene-states
+bool idle = false;
+bool travelling = false;
+bool glitching = false;
+bool isShocking = false;
+bool isFading = true;  // Tracks if the console is fading
+
+// Define the relay pins in an array
+const int RELAY_PINS[] = { RELAY1_PIN, RELAY2_PIN, RELAY3_PIN, RELAY4_PIN, RELAY5_PIN, RELAY6_PIN, RELAY7_PIN, RELAY8_PIN };
+const int NUM_RELAYS = sizeof(RELAY_PINS) / sizeof(RELAY_PINS[0]);
+
+// Pin definitions for NeoPixel
+#define PIN 32
+#define NUMmachine 100
+Adafruit_NeoPixel machine(NUMmachine, PIN, NEO_GRB + NEO_KHZ800);
+
+#define NUMBERS 33
+#define DISP 100
+Adafruit_NeoPixel time_display(DISP, NUMBERS, NEO_GRB + NEO_KHZ800);
+
+#define CAN 34
+#define NUM_CANDLES 3
+#define NUM_PIXELS_PER_CANDLE 3
+#define NUM_PIXELS (NUM_CANDLES * NUM_PIXELS_PER_CANDLE)
+Adafruit_NeoPixel pixels(NUM_PIXELS, CAN, NEO_GRB + NEO_KHZ800);
+
+// Definitions for the additional independent LEDs
+#define NUM_EXTRA_PIXELS 6  // Number of independent extra pixels
+Adafruit_NeoPixel spotlights(NUM_EXTRA_PIXELS, CAN, NEO_GRB + NEO_KHZ800);
+
+
+// Which pin on the Arduino is connected to the time circuits?
+#define circuits 35
+// How many Neomachine are attached to the Arduino?
+#define circ 100  // Popular NeoPixel ring size
+Adafruit_NeoPixel time_circuits(circ, circuits, NEO_GRB + NEO_KHZ800);
+
+
+// Timers
+unsigned long previousMillis = 0;
+unsigned long startMillis = 0;
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 50;  // Debounce delay in milliseconds
+const long intervalpsu = 1000;           // Update every 1000ms (1 second)
+
+unsigned long interval = random(50, 200);  // Random interval between updates
+int twinkle = random(100, 2000);           // Change the flash speed randomly
+int fliker = random(600, 1200);            // Change the flash speed randomly
+int timefliker = 15;
+int electric = random(600, 1200);  // Change the flash speed randomly
+const long fade_time = 4000;       //console fade in time  //  needs to be length of boot up track
+int flickerSpeed = 800;            // Speed of the flicker in milliseconds
+const long blink_interval = 500;   // Blink interval in milliseconds
+
+
+// Call this once in setup()
+void setupSX1509() {
+  if (!io.begin()) {
+   ESP32_MAIN.println("SX1509 not found!");
+  } else {
+   ESP32_MAIN.println("SX1509 connected!");
+    // Set SX1509 pins 0-13 as inputs with internal pull-ups
+    for (int i = 0; i <= 13; i++) {
+      io.pinMode(i, INPUT_PULLUP);
+    }
+  }
 }
-// ** Loading Screen with SHOWDUINO Title & Version **
-void showLoadingScreen() {
-    tft.fillScreen(TFT_BLACK);
+// Call this inside your existing sendDiagnostics() function or separately
+void checkSX1509Buttons() {
+  for (int i = 0; i <= 13; i++) {
+    bool state = io.digitalRead(i);
+   ESP32_MAIN.print("SX1509 Button ");
+   ESP32_MAIN.print(i);
+   ESP32_MAIN.println(state == LOW ? " PRESSED" : " NOT PRESSED");
+  }
+}
 
-    tft.setTextColor(TFT_WHITE);
-    tft.setTextSize(3);
-    drawCenteredText("SHOWDUINO", 40, 3);
+void twentyfive() {
 
-    tft.setTextSize(2);
-    drawCenteredText("SYSTEM v1.0", 70, 2);
+  //5
+  // time_display.setPixelColor(0, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(1, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(2, 255, 0, 0);  // Set the pixel color
+  // time_display.setPixelColor(3, 255, 0, 0); // Set the pixel color
+  time_display.setPixelColor(4, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(5, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(6, 255, 0, 0);  // Set the pixel color
 
-    for (int progress = 0; progress <= 100; progress += 10) {
-        showLoadingProgress(progress);
-        delay(300);
+  /*------------------------------------------------------------*/
+  //2
+
+  time_display.setPixelColor(7, 255, 0, 0);   // Set the pixel color
+  time_display.setPixelColor(8, 255, 0, 0);   // Set the pixel color
+                                              // time_display.setPixelColor(9, 255, 0, 0); // Set the pixel color
+  time_display.setPixelColor(10, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(11, 255, 0, 0);  // Set the pixel color
+                                              // time_display.setPixelColor(12, 255, 0, 0); // Set the pixel color
+  time_display.setPixelColor(13, 255, 0, 0);  // Set the pixel color
+
+  /*------------------------------------------------------------*/
+  //0
+
+  time_display.setPixelColor(14, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(15, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(16, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(17, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(18, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(19, 255, 0, 0);  // Set the pixel color
+                                              //  time_display.setPixelColor(20, 255, 0, 0); // Set the pixel color
+
+  /*------------------------------------------------------------*/
+  //2
+
+  time_display.setPixelColor(21, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(22, 255, 0, 0);
+  //time_display.setPixelColor(23, 255, 0, 0); // Set the pixel color
+  time_display.setPixelColor(24, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(25, 255, 0, 0);  // Set the pixel color
+                                              // time_display.setPixelColor(26, 255, 0, 0); // Set the pixel color
+  time_display.setPixelColor(27, 255, 0, 0);  // Set the pixel color
+
+  time_display.show();
+}
+void five_ten() {
+
+  time_display.setPixelColor(0, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(1, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(2, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(3, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(4, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(5, 255, 0, 0);  // Set the pixel color
+  // time_display.setPixelColor(6, 255, 0, 0); // Set the pixel color
+
+  /*------------------------------------------------------------*/
+
+
+  time_display.setPixelColor(7, 255, 0, 0);  // Set the pixel color
+  // time_display.setPixelColor(8, 255, 0, 0); // Set the pixel color
+  // time_display.setPixelColor(9, 255, 0, 0); // Set the pixel color
+  //  time_display.setPixelColor(10, 255, 0, 0); // Set the pixel color
+  // time_display.setPixelColor(11, 255, 0, 0); // Set the pixel color
+  time_display.setPixelColor(12, 255, 0, 0);  // Set the pixel color
+  // time_display.setPixelColor(13, 255, 0, 0); // Set the pixel color
+
+  /*------------------------------------------------------------*/
+
+
+  time_display.setPixelColor(14, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(15, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(16, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(17, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(18, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(19, 255, 0, 0);  // Set the pixel color
+  // time_display.setPixelColor(20, 255, 0, 0); // Set the pixel color
+
+  /*------------------------------------------------------------*/
+  //5
+
+  //time_display.setPixelColor(21, 255, 0, 0); // Set the pixel color
+  time_display.setPixelColor(22, 255, 0, 0);
+  time_display.setPixelColor(23, 255, 0, 0);  // Set the pixel color
+  // time_display.setPixelColor(24, 255, 0, 0); // Set the pixel color
+  time_display.setPixelColor(25, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(26, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(27, 255, 0, 0);  // Set the pixel color
+
+  time_display.show();
+}
+void zero() {
+
+  time_display.setPixelColor(0, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(1, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(2, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(3, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(4, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(5, 255, 0, 0);  // Set the pixel color
+  //time_display.setPixelColor(6, 255, 0, 0); // Set the pixel color
+
+  /*------------------------------------------------------------*/
+
+
+  time_display.setPixelColor(7, 255, 0, 0);   // Set the pixel color
+  time_display.setPixelColor(8, 255, 0, 0);   // Set the pixel color
+  time_display.setPixelColor(9, 255, 0, 0);   // Set the pixel color
+  time_display.setPixelColor(10, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(11, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(12, 255, 0, 0);  // Set the pixel color
+  //  time_display.setPixelColor(13, 255, 0, 0); // Set the pixel color
+
+  /*------------------------------------------------------------*/
+
+
+  time_display.setPixelColor(14, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(15, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(16, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(17, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(18, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(19, 255, 0, 0);  // Set the pixel color
+  //  time_display.setPixelColor(20, 255, 0, 0); // Set the pixel color
+
+  /*------------------------------------------------------------*/
+
+
+  time_display.setPixelColor(21, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(22, 255, 0, 0);
+  time_display.setPixelColor(23, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(24, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(25, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(26, 255, 0, 0);  // Set the pixel color
+  //  time_display.setPixelColor(27, 255, 0, 0); // Set the pixel color
+
+  time_display.show();
+}
+void ninefourtwo() {  //
+
+  time_display.setPixelColor(0, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(1, 255, 0, 0);  // Set the pixel color
+  // time_display.setPixelColor(2, 255, 0, 0); // Set the pixel color
+  time_display.setPixelColor(3, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(4, 255, 0, 0);  // Set the pixel color
+  // time_display.setPixelColor(5, 255, 0, 0); // Set the pixel color
+  time_display.setPixelColor(6, 255, 0, 0);  // Set the pixel color
+
+  /*------------------------------------------------------------*/
+
+
+  time_display.setPixelColor(7, 255, 0, 0);  // Set the pixel color
+  // time_display.setPixelColor(8, 255, 0, 0); // Set the pixel color
+  time_display.setPixelColor(9, 255, 0, 0);  // Set the pixel color
+  //  time_display.setPixelColor(10, 255, 0, 0); // Set the pixel color
+  // time_display.setPixelColor(11, 255, 0, 0); // Set the pixel color
+  time_display.setPixelColor(12, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(13, 255, 0, 0);  // Set the pixel color
+
+  /*------------------------------------------------------------*/
+
+
+  time_display.setPixelColor(14, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(15, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(16, 255, 0, 0);  // Set the pixel color
+  // time_display.setPixelColor(17, 255, 0, 0); // Set the pixel color
+  time_display.setPixelColor(18, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(19, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(20, 255, 0, 0);  // Set the pixel color
+
+  /*------------------------------------------------------------*/
+
+
+  time_display.setPixelColor(21, 255, 0, 0);  // Set the pixel color
+  // time_display.setPixelColor(22, 255, 0, 0);
+  //  time_display.setPixelColor(23, 255, 0, 0); // Set the pixel color
+  // time_display.setPixelColor(24, 255, 0, 0); // Set the pixel color
+  // time_display.setPixelColor(25, 255, 0, 0); // Set the pixel color
+  time_display.setPixelColor(26, 255, 0, 0);  // Set the pixel color
+  //   time_display.setPixelColor(27, 255, 0, 0); // Set the pixel color
+
+  time_display.show();
+}
+void oneeightfourtwo() {
+
+  time_display.setPixelColor(0, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(1, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(2, 255, 0, 0);  // Set the pixel color
+  // time_display.setPixelColor(3, 255, 0, 0); // Set the pixel color
+  time_display.setPixelColor(4, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(5, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(6, 255, 0, 0);  // Set the pixel color
+
+  /*------------------------------------------------------------*/
+
+
+  time_display.setPixelColor(7, 255, 0, 0);   // Set the pixel color
+  time_display.setPixelColor(8, 255, 0, 0);   // Set the pixel color
+  time_display.setPixelColor(9, 255, 0, 0);   // Set the pixel color
+  time_display.setPixelColor(10, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(11, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(12, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(13, 255, 0, 0);  // Set the pixel color
+
+  /*------------------------------------------------------------*/
+
+
+  time_display.setPixelColor(14, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(15, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(16, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(17, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(18, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(19, 255, 0, 0);  // Set the pixel color
+  time_display.setPixelColor(20, 255, 0, 0);  // Set the pixel color
+
+  /*------------------------------------------------------------*/
+
+
+  time_display.setPixelColor(21, 255, 0, 0);  // Set the pixel color
+  // time_display.setPixelColor(22, 255, 0, 0);
+  //  time_display.setPixelColor(23, 255, 0, 0); // Set the pixel color
+  // time_display.setPixelColor(24, 255, 0, 0); // Set the pixel color
+  // time_display.setPixelColor(25, 255, 0, 0); // Set the pixel color
+  time_display.setPixelColor(26, 255, 0, 0);  // Set the pixel color
+  //   time_display.setPixelColor(27, 255, 0, 0); // Set the pixel color
+
+  time_display.show();
+}
+
+
+
+void timecircuit_flicker() {
+  unsigned long currentMillis = millis();
+
+  // Check if the desired time has passed to update the LEDs
+  if (currentMillis - previousMillis >= flickerSpeed) {
+    previousMillis = currentMillis;  // Update the time for the next interval
+
+    // Update all pixels with new random colors
+    for (int i = 0; i < time_circuits.numPixels(); i++) {
+      time_circuits.setPixelColor(i, time_circuits.Color(random(256), random(256), random(256)));
+    }
+    time_circuits.show();  // Update the LEDs with the new colors
+  }
+}
+
+
+void console_flikr() {
+  unsigned long currentMillis = millis();
+
+  if (currentMillis - previousMillis >= fliker) {
+    previousMillis = currentMillis;
+    for (int i = 11; i <= 14; i++) {
+      if (random(10) == 0) {
+        machine.setPixelColor(i, 255, 255, 255);
+
+      } else {
+        machine.setPixelColor(i, 0, 0, 0);
+      }
+    }
+    machine.show();
+  }
+}
+
+
+void shocking() {
+  unsigned long currentMillis = millis();
+
+  if (currentMillis - previousMillis >= electric) {
+    previousMillis = currentMillis;
+    for (int i = 0; i < 20; i++) {
+      machine.setPixelColor(i, 255, 255, 255);
+    }
+
+    delay(50);
+    machine.clear();
+    machine.show();
+
+    if (currentMillis - previousMillis >= electric) {
+      previousMillis = currentMillis;
+      for (int i = 0; i < 20; i++) {
+        time_display.setPixelColor(i, 255, 255, 255);
+      }
+      for (int i = 1; i < 50; i++) {
+        machine.setPixelColor(i, 255, 255, 255);
+      }
+      time_display.show();
+      machine.show();
+      delay(50);
+      time_display.clear();
+      machine.clear();
+      time_display.show();
+      machine.show();
+    }
+  }
+}
+
+
+void twink() {
+  unsigned long currentMillis = millis();
+
+  if (currentMillis - previousMillis >= twinkle) {
+    previousMillis = currentMillis;
+
+    // Generate a new random interval for the next update
+    twinkle = random(2, 100);  // Flash quicker with shorter intervals
+
+    for (int i = 22; i < 28; i++) {
+      if (random(97) == 0) {  // 50% chance for this LED to light up
+        // Generate a random brightness level
+        int brightness = random(5, 100);  // Adjust range for subtle or bright twinkle
+        // Set the pixel with the random brightness (white light)
+        machine.setPixelColor(i, brightness, brightness, brightness);
+      } else {
+        // Keep the pixel off
+        machine.setPixelColor(i, 0, 0, 0);
+      }
+    }
+
+    machine.show();  // Refresh the LEDs to show the changes
+  }
+}
+
+void time_flikr() {
+  unsigned long currentMillis = millis();
+
+  if (currentMillis - previousMillis >= timefliker) {
+    previousMillis = currentMillis;
+    for (int i = 0; i <= 30; i++) {
+      if (random(10) == 0) {
+        time_display.setPixelColor(i, 255, 255, 255);
+
+      } else {
+        time_display.setPixelColor(i, 0, 0, 0);
+      }
+    }
+    time_display.show();
+  }
+}
+
+void console_fade() {
+  unsigned long currentMillis = millis();
+
+  // Fade only after a specified time has passed
+  if (currentMillis - previousMillis >= fade_time) {
+    previousMillis = currentMillis;
+
+    // Smooth fade from black (0) to full brightness (255)
+    for (int brightness = 0; brightness <= 255; brightness++) {  // Change direction of the loop
+      for (int i = 0; i <= 9; i++) {
+        // Set color with the current brightness level (RGB values for white)
+        time_circuits.setPixelColor(i, time_circuits.Color(brightness, brightness, brightness));
+      }
+
+      time_circuits.show();  // Update LED colors only once after setting all pixels
+      delay(10);             // Add a short delay for the fade effect to be visible
+    }
+  }
+}
+
+void console_fade_out() {
+  unsigned long currentMillis = millis();
+
+  // Fade only after a specified time has passed
+  if (currentMillis - previousMillis >= fade_time) {
+    previousMillis = currentMillis;
+
+    // Smooth fade from full brightness (255) to black (0)
+    for (int brightness = 255; brightness >= 0; brightness--) {
+      for (int i = 11; i <= 17; i++) {
+        // Set color with the current brightness level (RGB values for white)
+        machine.setPixelColor(i, machine.Color(brightness, brightness, brightness));
+      }
+
+      machine.show();  // Update LED colors only once after setting all pixels
+      delay(70);       // Add a short delay for the fade effect to be visible
+    }
+  }
+}
+
+
+const long twinkleDelay = 5;            // Delay in milliseconds for the twinkle effect
+int ledIndices[] = { 18, 19, 20, 21 };  // Array of LED indices
+void twinkleLEDs() {
+  unsigned long currentMillis = millis();  // Get the current time
+                                           // Check if it's time to update the LEDs
+  if (currentMillis - previousMillis >= twinkleDelay) {
+    previousMillis = currentMillis;  // Save the last update time
+
+    // Update each LED randomly
+    for (int i = 0; i < 4; i++) {
+      int r = random(0, 2);  // Randomly turn the LED on (green) or off (black)
+      if (r == 1) {
+        machine.setPixelColor(ledIndices[i], 255, 255, 255);  // Turn LED green
+      } else {
+        machine.setPixelColor(ledIndices[i], 0, 0, 0);  // Turn LED off
+      }
+    }
+
+    machine.show();  // Apply the changes to the LEDs
+  }
+}
+
+
+// Variables for glitch effects
+unsigned long previousMillisPixel1 = 0;
+unsigned long previousMillisPixel2 = 0;
+unsigned long glitchIntervalPixel1 = random(200, 700);  // Random initial interval for Pixel 1
+unsigned long glitchIntervalPixel2 = random(200, 700);  // Random initial interval for Pixel 2
+int brightnessPixel1 = 200;                             // Initial brightness for Pixel 1
+int brightnessPixel2 = 200;                             // Initial brightness for Pixel 2
+void glitchEffect() {
+  unsigned long currentMillis = millis();
+
+  // Handle Pixel 1 glitch
+  if (currentMillis - previousMillisPixel1 >= glitchIntervalPixel1) {
+    previousMillisPixel1 = currentMillis;
+    glitchIntervalPixel1 = random(200, 700);  // Set a new random interval
+
+    // Subtly vary the brightness for Pixel 1
+    brightnessPixel1 = random(50, 150);                                     // Slight dimming or brightening
+    machine.setPixelColor(1, brightnessPixel1, brightnessPixel1 * 0.8, 0);  // Dirty yellow
+    machine.show();
+  }
+
+  // Handle Pixel 2 glitch
+  if (currentMillis - previousMillisPixel2 >= glitchIntervalPixel2) {
+    previousMillisPixel2 = currentMillis;
+    glitchIntervalPixel2 = random(200, 700);  // Set a new random interval
+
+    // Subtly vary the brightness for Pixel 2
+    brightnessPixel2 = random(50, 150);                                     // Slight dimming or brightening
+    machine.setPixelColor(2, brightnessPixel2, brightnessPixel2 * 0.8, 0);  // Dirty yellow
+    machine.show();
+  }
+}
+void glitchRed() {
+  unsigned long currentMillis = millis();
+
+  // Handle Pixel 1 glitch
+  static unsigned long previousMillisPixel1 = 0;
+  static int glitchIntervalPixel1 = random(200, 700);
+  static int brightnessPixel1 = random(20, 255);
+
+  if (currentMillis - previousMillisPixel1 >= glitchIntervalPixel1) {
+    previousMillisPixel1 = currentMillis;
+    glitchIntervalPixel1 = random(200, 700);  // Set a new random interval
+
+    // Subtly vary the brightness for Pixel 1
+    brightnessPixel1 = random(20, 255);                // Slight dimming or brightening
+    machine.setPixelColor(1, brightnessPixel1, 0, 0);  // Pure red with varying brightness
+    machine.show();
+  }
+
+  // Handle Pixel 2 glitch
+  static unsigned long previousMillisPixel2 = 0;
+  static int glitchIntervalPixel2 = random(200, 700);
+  static int brightnessPixel2 = random(50, 150);
+
+  if (currentMillis - previousMillisPixel2 >= glitchIntervalPixel2) {
+    previousMillisPixel2 = currentMillis;
+    glitchIntervalPixel2 = random(200, 700);  // Set a new random interval
+
+    // Subtly vary the brightness for Pixel 2
+    brightnessPixel2 = random(50, 255);                // Slight dimming or brightening
+    machine.setPixelColor(2, brightnessPixel2, 0, 0);  // Pure red with varying brightness
+    machine.show();
+  }
+}
+
+
+void initializeRelays() {
+  pinMode(RELAY1_PIN, OUTPUT);
+  pinMode(RELAY2_PIN, OUTPUT);
+  pinMode(RELAY3_PIN, OUTPUT);
+  pinMode(RELAY4_PIN, OUTPUT);
+  pinMode(RELAY5_PIN, OUTPUT);
+  pinMode(RELAY6_PIN, OUTPUT);
+  pinMode(RELAY7_PIN, OUTPUT);
+  pinMode(RELAY8_PIN, OUTPUT);
+  digitalWrite(RELAY1_PIN, LOW);  // Relay off
+  digitalWrite(RELAY2_PIN, LOW);  // Relay off
+  digitalWrite(RELAY3_PIN, LOW);  // Relay off
+  digitalWrite(RELAY4_PIN, LOW);  // Relay off
+  digitalWrite(RELAY5_PIN, LOW);  // Relay off
+  digitalWrite(RELAY6_PIN, LOW);  // Relay off
+  digitalWrite(RELAY7_PIN, LOW);  // Relay off
+  digitalWrite(RELAY8_PIN, LOW);  // Relay off
+}
+void initializeNeoPixels() {
+  machine.begin();
+  machine.clear();
+  machine.show();
+  time_circuits.begin();
+  time_circuits.clear();
+  time_circuits.show();
+  pixels.begin();
+  pixels.clear();
+  pixels.show();
+  time_display.begin();
+  time_display.clear();
+  time_display.show();
+}
+
+
+
+
+
+// Function to handle emergency stop
+void handleEmergencyStop() {
+  emergencyStopActive = true;
+  delay(200);  // Debounce delay after detecting the button press
+  Serial.println("emergency stop");
+
+
+  digitalWrite(RELAY1_PIN, HIGH);  //  relay on
+  digitalWrite(RELAY2_PIN, HIGH);  //  relay on
+  digitalWrite(RELAY3_PIN, HIGH);  //  relay on
+  digitalWrite(RELAY4_PIN, HIGH);  //  relay on
+  digitalWrite(RELAY5_PIN, HIGH);  //  relay on
+  digitalWrite(RELAY6_PIN, HIGH);  //  relay on
+  digitalWrite(RELAY7_PIN, HIGH);  //  relay on
+  digitalWrite(RELAY8_PIN, HIGH);  //  relay on
+
+
+  machine.clear();
+  machine.show();
+  Serial.println("Emergency Stop Activated");
+  machine.clear();
+  for (int i = 0; i <= 100; i++) {
+    machine.setPixelColor(i, machine.Color(255, 255, 255));  // white color
+  }
+  machine.show();
+  time_display.clear();
+  for (int i = 0; i <= 100; i++) {
+    time_display.setPixelColor(i, time_display.Color(255, 255, 255));  // white color
+  }
+  time_display.show();
+  pixels.clear();
+  for (int i = 0; i <= 100; i++) {
+    pixels.setPixelColor(i, pixels.Color(255, 255, 255));  // white color
+  }
+  pixels.show();
+  time_circuits.clear();
+  for (int i = 0; i <= 100; i++) {
+    time_circuits.setPixelColor(i, time_circuits.Color(255, 255, 255));  // white color
+  }
+  time_circuits.show();
+}
+
+
+// Function to handle system reset
+void handleReset() {
+  unsigned long currentMillis = millis();
+  digitalWrite(RELAY1_PIN, LOW);  //  relay off
+  digitalWrite(RELAY2_PIN, LOW);  //  relay off
+  digitalWrite(RELAY3_PIN, LOW);  //  relay off
+  digitalWrite(RELAY4_PIN, LOW);  //  relay off
+  digitalWrite(RELAY5_PIN, LOW);  //  relay off
+  digitalWrite(RELAY6_PIN, LOW);  //  relay off
+  digitalWrite(RELAY7_PIN, LOW);  //  relay off
+  digitalWrite(RELAY8_PIN, LOW);  //  relay off
+
+
+
+
+  machine.clear();
+  machine.show();
+  sceneActive = false, scene1Active = false, scene2Active = false, scene3Active = false,
+  scene4Active = false, scene5Active = false, scene6Active = false,
+  scene7Active = false, scene8Active = false, scene9Active = false,
+  scene10Active = false, idle = false;
+  startPressed = false;
+  emergencyStopActive = false;
+  Serial.println("System Reset");
+
+
+  machine.clear();
+  machine.show();
+  time_circuits.clear();
+  time_circuits.show();
+  pixels.clear();
+  pixels.show();
+  time_display.clear();
+  time_display.show();
+
+  cute.play(S_MODE3);
+}
+
+void handleStartButton() {  ///  acting as scene 1
+  unsigned long currentMillis = millis();
+
+  startPressed = true;
+
+
+  startMillis = millis();
+  Serial.println("Start Button Pressed");
+
+
+  // Continue with the rest of the logic after fading completes
+
+  scene1Active = true;
+  Serial.println("Scene 1 Activated");
+
+
+  // Define scene timestamps
+  unsigned long scene1stamp1 = millis();
+  unsigned long scene1stamp2 = scene1stamp1 + 5000;  // First delay ends
+  unsigned long scene1stamp3 = scene1stamp2 + 8000;  // Second delay ends
+  unsigned long scene1stamp4 = scene1stamp3 + 5000;  // Third delay ends
+  unsigned long scene1stamp5 = scene1stamp4 + 5000;  // fourth delay ends
+  unsigned long scene1stamp6 = scene1stamp5 + 5000;  // fifth delay ends
+  unsigned long scene1stamp7 = scene1stamp6 + 5000;  // sixth delay ends
+  unsigned long idleStart = scene1stamp7 + 8000;     // Enter idle state after this
+
+  while (millis() < idleStart) {
+    unsigned long currentMillis = millis();
+
+    // First 5000ms action
+    if (currentMillis >= scene1stamp1 && currentMillis < scene1stamp2) {
+
+      console_fade();
+
+      // Fade only after a specified time has passed
+    }
+
+    // Second 5000ms action
+    if (currentMillis >= scene1stamp2 && currentMillis < scene1stamp3) {
+
+      Serial.println("Scene 1: Action 2 executed.");
+
+      timecircuit_flicker();
+      machine.setPixelColor(1, 255, 255, 0);    // Set the pixel color      //gauge 1
+      machine.setPixelColor(2, 255, 255, 255);  // Set the pixel color      // gauge 2
+      machine.setPixelColor(18, 0, 255, 0);     // Set the pixel color      // door open
+      machine.setPixelColor(19, 0, 255, 0);     // Set the pixel color      // door open
+      machine.setPixelColor(20, 0, 255, 0);     // Set the pixel color      // door open
+      machine.setPixelColor(21, 0, 255, 0);     // Set the pixel color      // door open
+      machine.show();
+      twentyfive();
+    }
+    // Third 5000ms action
+    if (currentMillis >= scene1stamp3 && currentMillis < scene1stamp4) {
+
+
+      Serial.println("Scene 1: Action 3 executed.");
+      timecircuit_flicker();
+      machine.setPixelColor(0, 255, 255, 255);  // steam on
+      machine.show();
+      digitalWrite(RELAY1_PIN, HIGH);
+    }
+
+
+    // fourth 5000ms action
+    if (currentMillis >= scene1stamp4 && currentMillis < scene1stamp5) {
+
+      Serial.println("Scene 1: Action 4 executed.");
+      timecircuit_flicker();
+      machine.setPixelColor(0, 0, 0, 0);  // steam off
+      machine.show();
+      digitalWrite(RELAY1_PIN, LOW);
+    }
+    // fifth 5000ms action
+    if (currentMillis >= scene1stamp5 && currentMillis < scene1stamp6) {
+
+
+      Serial.println("Scene 1: Action 5 executed.");
+      timecircuit_flicker();
+    }
+
+    // sixth 5000ms action
+    if (currentMillis >= scene1stamp6 && currentMillis < scene1stamp7) {
+
+      Serial.println("Scene 1: Action 6 executed.");
+      timecircuit_flicker();
+    }
+
+    // Enter idle state after 8000ms with no input
+    if (currentMillis >= scene1stamp7 && currentMillis < idleStart) {
+
+      Serial.println("Scene 1: Waiting for input.");
+      timecircuit_flicker();
+    }
+
+    // Check for emergency stop
+    handleEmergencyStop();
+    if (emergencyStopActive && scene1Active) {
+      Serial.println("Emergency Stop triggered");
+
+
+      return;  // Exit the Scene 1 logic
+    }
+  }
+
+
+  flickerSpeed = 900;
+  Serial.println("Scene 1: Entering idle state.");
+  timecircuit_flicker();
+}
+
+void IDLE() {
+
+  Serial.println("IDLE Activated");
+
+  for (int i = 0; i < machine.numPixels(); i++) {
+    machine.setPixelColor(i, machine.Color(255, 0, 255));  // Purple
+  }
+  machine.show();
+  sceneActive = false, scene1Active = false, scene2Active = false, scene3Active = false,
+  scene4Active = false, scene5Active = false, scene6Active = false,
+  scene7Active = false, scene8Active = false, scene9Active = false,
+  scene10Active = false, idle = true;
+  startPressed = false;
+  emergencyStopActive = false;
+  // handleScenes();
+  // Check emergency stop first to override everything
+  //handleEmergencyStop();
+}
+void scene2() {
+
+
+  scene2Active = true;
+  Serial.println("Scene 2 Activated");
+
+
+  // Define scene timestamps
+  unsigned long scene2stamp1 = millis();
+  unsigned long scene2stamp2 = scene2stamp1 + 5000;
+  unsigned long scene2stamp3 = scene2stamp2 + 8000;
+  unsigned long scene2stamp4 = scene2stamp3 + 5000;
+  unsigned long scene2stamp5 = scene2stamp4 + 5000;
+  unsigned long scene2stamp6 = scene2stamp5 + 5000;
+  unsigned long scene2stamp7 = scene2stamp6 + 5000;
+  unsigned long idleStart = scene2stamp7 + 8000;
+
+  while (millis() < idleStart) {
+    unsigned long currentMillis = millis();
+
+    if (currentMillis >= scene2stamp1 && currentMillis < scene2stamp2) {
+
+      Serial.println("Scene 2: Action 1 executed.");
+    }
+
+    if (currentMillis >= scene2stamp2 && currentMillis < scene2stamp3) {
+
+      Serial.println("Scene 2: Action 2 executed.");
+    }
+
+    if (currentMillis >= scene2stamp3 && currentMillis < scene2stamp4) {
+
+      Serial.println("Scene 2: Action 3 executed.");
+    }
+
+    if (currentMillis >= scene2stamp7 && currentMillis < idleStart) {
+
+      Serial.println("Scene 2: Waiting for input.");
+    }
+
+    handleEmergencyStop();
+    if (emergencyStopActive && scene2Active) {
+      Serial.println("Emergency Stop triggered");
+      return;
+    }
+  }
+
+  flickerSpeed = 900;
+  Serial.println("Scene 2: Entering idle state.");
+  scene2Active = false;
+  IDLE();
+}
+void scene3() {
+
+
+  Serial.println("Scene 3 Activated");
+
+
+  for (int i = 0; i < machine.numPixels(); i++) {
+    machine.setPixelColor(i, machine.Color(0, 0, 255));  // Blue
+  }
+  machine.show();
+
+  digitalWrite(RELAY_PINS[4], HIGH);  // Relay logic for Scene 3
+  digitalWrite(RELAY_PINS[5], HIGH);
+}
+void scene4() {
+
+
+  Serial.println("Scene 4 Activated");
+
+
+  for (int i = 0; i < machine.numPixels(); i++) {
+    machine.setPixelColor(i, machine.Color(255, 255, 0));  // Yellow
+  }
+  machine.show();
+
+  digitalWrite(RELAY_PINS[6], HIGH);  // Relay logic for Scene 4
+  digitalWrite(RELAY_PINS[7], HIGH);
+}
+void scene5() {
+
+
+  Serial.println("Scene 5 Activated");
+
+
+  for (int i = 0; i < machine.numPixels(); i++) {
+    machine.setPixelColor(i, machine.Color(255, 0, 255));  // Purple
+  }
+  machine.show();
+
+  digitalWrite(RELAY_PINS[8], HIGH);  // Relay logic for Scene 5
+  digitalWrite(RELAY_PINS[9], HIGH);
+}
+void scene6() {
+
+
+  Serial.println("Scene 6 Activated");
+
+
+  for (int i = 0; i < machine.numPixels(); i++) {
+    machine.setPixelColor(i, machine.Color(255, 0, 255));  // Purple
+  }
+  machine.show();
+
+  digitalWrite(RELAY_PINS[8], HIGH);  // Relay logic for Scene 5
+  digitalWrite(RELAY_PINS[9], HIGH);
+}
+void scene7() {
+
+
+  Serial.println("Scene 7 Activated");
+
+  for (int i = 0; i < machine.numPixels(); i++) {
+    machine.setPixelColor(i, machine.Color(255, 0, 255));  // Purple
+  }
+  machine.show();
+
+  digitalWrite(RELAY_PINS[8], HIGH);  // Relay logic for Scene 5
+  digitalWrite(RELAY_PINS[9], HIGH);
+}
+void scene8() {
+
+
+  Serial.println("Scene 8 Activated");
+
+  for (int i = 0; i < machine.numPixels(); i++) {
+    machine.setPixelColor(i, machine.Color(255, 0, 255));  // Purple
+  }
+  machine.show();
+
+  digitalWrite(RELAY_PINS[8], HIGH);  // Relay logic for Scene 5
+  digitalWrite(RELAY_PINS[9], HIGH);
+}
+void scene9() {
+
+
+  Serial.println("Scene 9 Activated");
+
+  for (int i = 0; i < machine.numPixels(); i++) {
+    machine.setPixelColor(i, machine.Color(255, 0, 255));  // Purple
+  }
+  machine.show();
+
+  digitalWrite(RELAY_PINS[8], HIGH);  // Relay logic for Scene 5
+  digitalWrite(RELAY_PINS[9], HIGH);
+}
+void scene10() {
+
+
+  Serial.println("Scene 10 Activated");
+
+
+  for (int i = 0; i < machine.numPixels(); i++) {
+    machine.setPixelColor(i, machine.Color(255, 0, 255));  // Purple
+  }
+  machine.show();
+
+  digitalWrite(RELAY_PINS[8], HIGH);  // Relay logic for Scene 5
+  digitalWrite(RELAY_PINS[9], HIGH);
+}
+
+
+void sendDiagnostics() {
+    int pwrStatus = digitalRead(PWR_OK_PIN);
+
+    float v5 = analogRead(VOLTAGE_5V) * (5.0 / 1023.0);
+    float v3 = analogRead(VOLTAGE_3V3) * (3.3 / 1023.0);
+    float v5sb = analogRead(STANDBY_POWER) * (5.0 / 1023.0);
+
+    // New line for 12V measurement
+    float v12Raw = analogRead(VOLTAGE_12V);
+    float v12 = v12Raw * (5.0 / 1023.0) * ((10.0 + 4.7) / 4.7); // Scales up the voltage
+
+   ESP32_MAIN.print("PWR_OK: ");
+   ESP32_MAIN.println(pwrStatus == HIGH ? "STABLE" : "UNSTABLE");
+
+   ESP32_MAIN.print("V5: ");
+   ESP32_MAIN.print(v5);
+   ESP32_MAIN.print("V, V3.3: ");
+   ESP32_MAIN.print(v3);
+   ESP32_MAIN.print("V, 5VSB: ");
+   ESP32_MAIN.print(v5sb);
+   ESP32_MAIN.print("V, V12: ");
+   ESP32_MAIN.print(v12);
+   ESP32_MAIN.println("V");
+}
+
+
+void runSelfTest() {
+ ESP32_MAIN.println("🔧 Running Self-Test...");
+
+  // Check Relays
+  for (int i = 2; i <= 9; i++) {  // Example: Relays on pins 2-9
+    pinMode(i, OUTPUT);
+    digitalWrite(i, HIGH);
+    delay(100);
+    digitalWrite(i, LOW);
+   ESP32_MAIN.print("Relay ");
+   ESP32_MAIN.print(i);
+   ESP32_MAIN.println(" OK");
+  }
+
+ checkSX1509Buttons();
+
+  // Check NeoPixels (If used)
+ ESP32_MAIN.println("NeoPixel Test: SUCCESS");
+
+  // Send completion message
+ ESP32_MAIN.println("✅ Self-Test Completed");
+}
+// Revised self-test function
+void runSelfTest(int step) {
+    switch (step) {
+        case 0:
+           ESP32_MAIN.println("🔄 Relay Test: ON/OFF");
+            bool relayTestPassed = true;
+            for (int i = 2; i <= 9; i++) {  
+                pinMode(i, OUTPUT);
+                digitalWrite(i, HIGH);
+                delay(100);
+                digitalWrite(i, LOW);
+                delay(100);
+            }
+           ESP32_MAIN.println(relayTestPassed ? "✅ Relay Test: PASS" : "❌ Relay Test Failed!");
+            break;
+
+        case 1:
+           ESP32_MAIN.println("🔘 SX1509 Button Test");
+            bool buttonTestPassed = true;
+            for (int i = 10; i <= 13; i++) {
+                bool state = io.digitalRead(i);
+                if (state == HIGH) { // Expect LOW if pressed (since pull-up)
+                    buttonTestPassed = false;
+                   ESP32_MAIN.print("❌ Button NOT PRESSED on SX1509 pin: ");
+                   ESP32_MAIN.println(i);
+                } else {
+                   ESP32_MAIN.print("✅ Button ");
+                   ESP32_MAIN.print(i);
+                   ESP32_MAIN.println(" OK");
+                }
+            }
+           ESP32_MAIN.println(buttonTestPassed ? "✅ Buttons PASS" : "❌ Buttons FAIL");
+            break;
+
+        case 2:
+           ESP32_MAIN.println("✅ Self-Test Completed!");
+           ESP32_MAIN.println("PASS");
+            break;
     }
 }
-// ** Progress Bar Function (Fixed Percentage Display) **
-void showLoadingProgress(int progress) {
-    int barX = 30;
-    int barY = 120;
-    int barWidth = tft.width() - 60;
-    int barHeight = 8;
 
-    static bool outlineDrawn = false;
-    if (!outlineDrawn) {
-        tft.drawRect(barX, barY, barWidth, barHeight, TFT_WHITE);
-        outlineDrawn = true;
-    }
 
-    // **Clear previous progress bar fill**
-    tft.fillRect(barX + 1, barY + 1, barWidth - 2, barHeight - 2, TFT_BLACK);
 
-    // **Fill new progress bar dynamically**
-    tft.fillRect(barX + 1, barY + 1, (progress * barWidth) / 100, barHeight - 2, TFT_GREEN);
+void setupRTC() {
+  Wire.begin();
+  if (!rtc.begin()) {
+    Serial.println("RTC not found!");
+    while (1);
+  }
 
-    // **Clear previous percentage text**
-    tft.fillRect(0, 145, tft.width(), 20, TFT_BLACK);
-
-    // **Print new percentage text centered**
-    drawCenteredText((String(progress) + "%").c_str(), 145, 2);
+  if (!rtc.isrunning()) {
+    Serial.println("RTC wasn't running, setting the time now.");
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  }
 }
-// ** Draw Main Menu with Bluetooth Indicator **
-void drawMenu() {
-    inSubMenu = false;
-    tft.fillScreen(TFT_BLACK);
 
-    drawCenteredText("Main Menu", 10, 2);
+void sendRTCData() {
+    DateTime now = rtc.now();  // Assuming your RTC object is `rtc`
+    String timeString = String(now.hour()) + ":" +
+                        String(now.minute()) + ":" +
+                        String(now.second());
 
-    // ** Bluetooth Indicator at Top Right **
-    tft.setTextSize(2);
-    tft.setTextColor(bluetoothEnabled ? TFT_GREEN : TFT_RED, TFT_BLACK);
-    tft.setCursor(tft.width() - 100, 10);  // **Position at top right**
-    tft.print(bluetoothEnabled ? "BT: ON" : "BT: OFF");
+    Serial1.print("TIME:");
+    Serial1.println(timeString);
+}
 
-    // ** Menu Options **
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextSize(2);
+
+// === Diagnostic Functions ===
+
+void sendRelayStatus() {
+    // Example relay status check logic
+    String relayStatus = "OK - All Relays Functioning";
     
-    for (int i = 0; i < menuLength; i++) {
-        int yPosition = firstMenuY + (i * menuSpacing);
-        drawCenteredText(mainMenu[i], yPosition, 2);
+    // If you have specific relay pin checks, add them here
+    if (digitalRead(RELAY1_PIN) == LOW) relayStatus = "WARNING - Relay 1 is OFF";
+    if (digitalRead(RELAY2_PIN) == LOW) relayStatus = "WARNING - Relay 2 is OFF";
+
+    ESP32_MAIN.println(relayStatus);
+}
+
+void sendNeoPixelStatus() {
+    // Example NeoPixel status check
+    bool neoPixelWorking = true; // Replace with actual check logic
+    if (neoPixelWorking) {
+        ESP32_MAIN.println("OK - NeoPixels Responding");
+    } else {
+        ESP32_MAIN.println("ERROR - NeoPixels Not Detected");
     }
+}
+
+void sendVoltageTemperature() {
+    float voltage = analogRead(A0) * (5.0 / 1023.0); // Example analog voltage reading
+    float temperature = 24.3; // Example static temp value — replace with actual sensor logic
+
+    String voltageTempStatus = String(voltage, 2) + "V | Temp: " + String(temperature, 1) + "°C";
+    ESP32_MAIN.println(voltageTempStatus);
 }
 
 
 
-
-
-
-
-
+        // === MP3 Player Control Commands (Commented for Now) ===
+        // ESP32_MAIN.println("PLAY_AMBIENT_1");  // Plays ambient track 1
+        // ESP32_MAIN.println("STOP_AMBIENT");    // Stops ambient track
+        // ESP32_MAIN.println("PLAY_MACHINE_2");  // Plays machine track 2
+        // ESP32_MAIN.println("STOP_MACHINE");    // Stops machine track
+    
 
 
 
@@ -127,206 +1187,107 @@ void drawMenu() {
 
 
 void setup() {
-    Serial.begin(115200);
+    DEBUG.begin(115200);  // Debugging
+    ESP32_MAIN.begin(115200); // Communication with ESP32
+    DEBUG.println("Arduino Mega started!");
 
-    mySpi.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
-    ts.begin(mySpi);
-    ts.setRotation(3);  
-    tft.init();
-    tft.setRotation(3);
+  setupRTC();             // Initialize RTC
+
     
-    showLoadingScreen();
-    drawMenu();
+    cute.init(BUZZER_PIN);
+  cute.play(S_HAPPY_SHORT);
+   
+    Serial.println("IR Receiver Ready");
+   setupSX1509();
+  
+  /*
+ 
+ CURRENT buzzer OPTIONS: 
+
+ S_CONNECTION   S_DISCONNECTION S_BUTTON_PUSHED   
+ S_MODE1        S_MODE2         S_MODE3     
+ S_SURPRISE     S_OHOOH         S_OHOOH2    
+ S_CUDDLY       S_SLEEPING      S_HAPPY     
+ S_SUPER_HAPPY  S_HAPPY_SHORT   S_SAD       
+ S_CONFUSED     S_FART1         S_FART2     
+ S_FART3        S_JUMP 20
+
+ */
+
+  pinMode(PWR_OK_PIN, INPUT);
+ ESP32_MAIN.println("ATX Power Monitoring Started (12V & TEMP Disabled)");
+  initializeRelays();
+  initializeNeoPixels();
 }
-
-
-
-
-
-
-
-
-
-
-
 
 
 
 void loop() {
-    if (ts.tirqTouched() && ts.touched()) {
-        TS_Point p = ts.getPoint();
-        int touchX = map(p.x, 0, 4095, 0, tft.width());
-        int touchY = map(p.y, 0, 4095, 0, tft.height());
+    // Get current time from millis()
+    unsigned long currentMillis = millis();
 
-        if (!inSubMenu) {
-            if (touchY >= firstMenuY && touchY <= firstMenuY + (menuLength * menuSpacing)) {
-                int touchedItem = floor((touchY - firstMenuY) / (float)menuSpacing);
-                touchedItem = constrain(touchedItem, 0, menuLength - 1);
-                selectedMenu = touchedItem;
-                handleMenuSelection(selectedMenu);
-            }
+    // RTC: Fetch current timestamp once per loop iteration
+    static unsigned long prevRTCupdate = 0;
+    const long rtcInterval = 1000;  // 1-second intervals
+    if (currentMillis - prevRTCupdate >= rtcInterval) {
+        prevRTCupdate = currentMillis;
+
+        // === RTC Data Handling ===
+        if (rtc.begin()) {   // RTC is detected
+            DateTime now = rtc.now();
+
+            // Send timestamp to ESP32
+            ESP32_MAIN.print("TIME:");
+            ESP32_MAIN.print(now.day(), DEC);
+            ESP32_MAIN.print("/");
+            ESP32_MAIN.print(now.month(), DEC);
+            ESP32_MAIN.print("/");
+            ESP32_MAIN.print(now.year(), DEC);
+            ESP32_MAIN.print(" ");
+            ESP32_MAIN.print(now.hour(), DEC);
+            ESP32_MAIN.print(":");
+            ESP32_MAIN.print(now.minute(), DEC);
+            ESP32_MAIN.print(":");
+            ESP32_MAIN.println(now.second(), DEC);
+        } 
+        else {
+            // RTC NOT DETECTED - Send Placeholder Time
+            ESP32_MAIN.println("TIME:--:--");
         }
-
-        if (inSubMenu && touchY >= backButtonY - 10 && touchY <= backButtonY + menuSpacing) {
-            drawMenu();
-        }
-
-        delay(100);
     }
-}
 
+    // === Serial Data Handling ===
+if (ESP32_MAIN.available()) {
+    String receivedData = ESP32_MAIN.readStringUntil('\n');
+    receivedData.trim();
 
+    DEBUG.print("Received from ESP32: ");
+    DEBUG.println(receivedData);
 
+    // === Handle Received Commands ===
+    if (receivedData == "BUZZ") {
+        cute.play(S_BUTTON_PUSHED);
+    } 
+    else if (receivedData == "REQUEST_DIAGNOSTICS") {
+        sendDiagnostics();
+    } 
+    else if (receivedData == "REQUEST_SELF_TEST") {
+        runSelfTest();
+    } 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// ** Handle Menu Selection **
-void handleMenuSelection(int selectedMenu) {
-    inSubMenu = true;
-    switch (selectedMenu) {
-        case 0:
-            bluetoothMenu();
-            break;
-        case 1:
-            showMenu();
-            break;
-        case 2:
-            wifiMenu();
-            break;
-        case 3:
-            settingsMenu();
-            break;
-        case 4:
-            diagnosticsMenu();
-            break;
-        default:
-            break;
-    }
-}
-// ** Enable/Disable Bluetooth **
-void toggleBluetooth(bool state) {
-    if (state) {
-        SerialBT.begin("Showduino");  // **Start Bluetooth**
-    } else {
-        SerialBT.end();  // **Turn Off Bluetooth**
-    }
-}
-
-// ** Bluetooth Menu - Now Controls Bluetooth Hardware **
-void bluetoothMenu() {
-    tft.fillScreen(TFT_BLACK);
-    drawCenteredText("Bluetooth Menu", 30, 2);
+    // === New Diagnostic Responses ===
+    else if (receivedData == "RELAY_CHECK") {
+        sendRelayStatus();
+    } 
+    else if (receivedData == "NEO_CHECK") {
+        sendNeoPixelStatus();
+    } 
+    else if (receivedData == "VOLTAGE_CHECK") {
+        sendVoltageTemperature();
+    } 
     
-    // Display Bluetooth status
-    String btStatus = bluetoothEnabled ? "Bluetooth: ON" : "Bluetooth: OFF";
-    drawCenteredText(btStatus.c_str(), 80, 2);
-    
-    drawCenteredText("Tap to Toggle", 120, 2);
-    drawBackButton();
-
-    // Wait for touch to toggle Bluetooth
-    while (true) {
-        if (ts.tirqTouched() && ts.touched()) {
-            TS_Point p = ts.getPoint();
-            int touchY = map(p.y, 0, 4095, 0, tft.height());
-
-            if (touchY >= 80 && touchY <= 140) { // **Tap to Toggle Bluetooth**
-                bluetoothEnabled = !bluetoothEnabled;
-                toggleBluetooth(bluetoothEnabled); // **Turn Bluetooth ON/OFF**
-                drawMenu();  // **Update Main Menu Indicator**
-                bluetoothMenu(); // **Refresh Screen**
-                return;
-            } 
-            if (touchY >= backButtonY - 10 && touchY <= backButtonY + 30) { // **Back Button**
-                drawMenu();
-                return;
-            }
-        }
-        delay(100);
-    }
+}
 }
 
-void showMenu() {
-    tft.fillScreen(TFT_BLACK);
-    drawCenteredText("Show Menu", 30, 2);
-    drawBackButton();
-}
 
-// ** WiFi Menu - Display Status **
-void wifiMenu() {
-    tft.fillScreen(TFT_BLACK);
-    drawCenteredText("WiFi Menu", 30, 2);
-    
-    drawCenteredText("WiFi Status: Not Connected", 80, 2);
-    drawCenteredText("Feature Coming Soon", 120, 2);
-    drawBackButton();
-    
-    while (true) {
-        if (ts.tirqTouched() && ts.touched()) {
-            TS_Point p = ts.getPoint();
-            int touchY = map(p.y, 0, 4095, 0, tft.height());
-            
-            if (touchY >= backButtonY - 10 && touchY <= backButtonY + 30) { // **Back Button**
-                drawMenu();
-                return;
-            }
-        }
-        delay(100);
-    }
-}
 
-// ** Settings Menu - Adjust Brightness **
-void settingsMenu() {
-    tft.fillScreen(TFT_BLACK);
-    drawCenteredText("Settings Menu", 30, 2);
-
-    drawCenteredText("Brightness Level", 80, 2);
-    drawCenteredText("Tap to Adjust", 120, 2);
-    drawBackButton();
-    
-    while (true) {
-        if (ts.tirqTouched() && ts.touched()) {
-            TS_Point p = ts.getPoint();
-            int touchY = map(p.y, 0, 4095, 0, tft.height());
-
-            if (touchY >= 80 && touchY <= 140) { // **Adjust Brightness**
-                brightnessLevel += 50;
-                if (brightnessLevel > 255) brightnessLevel = 50; // **Loop Brightness**
-                analogWrite(TFT_BL, brightnessLevel); // **Adjust Brightness**
-                settingsMenu(); // **Refresh Screen**
-                return;
-            } 
-            if (touchY >= backButtonY - 10 && touchY <= backButtonY + 30) { // **Back Button**
-                drawMenu();
-                return;
-            }
-        }
-        delay(100);
-    }
-}
-void diagnosticsMenu() {
-    tft.fillScreen(TFT_BLACK);
-    drawCenteredText("Diagnostics Menu", 30, 2);
-    drawBackButton();
-}
-
-// ** Draw Back Button (Centered) **
-void drawBackButton() {
-    drawCenteredText("Back", backButtonY, 2);
-}
