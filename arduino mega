@@ -3,9 +3,15 @@
 #include <CuteBuzzerSounds.h>
 #include <SparkFunSX1509.h>
 #include <RTClib.h>
+#include <DmxSimple.h>
 
 RTC_DS1307 rtc;  // clock
 SX1509 io;  // SX1509 instance
+
+#define DMX_DE_PIN 2      // RS485 Driver Enable (DE) pin on MKR 485 Shield
+#define DMX_CHANNEL 1     // Fixture DMX Address 1 (Smoke Machine Control)
+unsigned long smokeStartTime = 0;
+bool smokeActive = false;
 
 
 // Pin Assignments
@@ -21,14 +27,14 @@ float voltageMultiplier = 5.0 * (25.0 / 5.0) / 1023.0;
 
 #define BUZZER_PIN 48
 
-#define RELAY1_PIN 2
-#define RELAY2_PIN 3
-#define RELAY3_PIN 4
-#define RELAY4_PIN 5
-#define RELAY5_PIN 6
-#define RELAY6_PIN 7
-#define RELAY7_PIN 8
-#define RELAY8_PIN 9
+#define RELAY1_PIN 5
+#define RELAY2_PIN 6
+#define RELAY3_PIN 7
+#define RELAY4_PIN 8
+#define RELAY5_PIN 9
+#define RELAY6_PIN 10
+#define RELAY7_PIN 11
+#define RELAY8_PIN 12
 
 
 
@@ -1169,6 +1175,24 @@ void sendVoltageTemperature() {
 }
 
 
+void smoke_control(int value, unsigned long duration) {
+    if (!smokeActive) {
+        DmxSimple.write(DMX_CHANNEL, value);
+        Serial.print("Smoke Output Value: ");
+        Serial.println(value);
+        smokeStartTime = millis();
+        smokeActive = true;
+    }
+
+    if (smokeActive && millis() - smokeStartTime >= duration) {
+        DmxSimple.write(DMX_CHANNEL, 0); // Turn smoke machine off
+        Serial.println("Smoke Turned Off");
+        smokeActive = false;
+    }
+}
+
+// smoke_control(128, 2000);  // Example usage: smoke on at value 128 for 2000ms
+
 
         // === MP3 Player Control Commands (Commented for Now) ===
         // ESP32_MAIN.println("PLAY_AMBIENT_1");  // Plays ambient track 1
@@ -1196,9 +1220,15 @@ void setup() {
     
     cute.init(BUZZER_PIN);
   cute.play(S_HAPPY_SHORT);
-   
-    Serial.println("IR Receiver Ready");
    setupSX1509();
+
+   pinMode(DMX_DE_PIN, OUTPUT);
+    digitalWrite(DMX_DE_PIN, HIGH); // Enable RS485 Transmit Mode
+
+    DmxSimple.usePin(4);             // DMX output pin (TX connected to pin 4)
+    DmxSimple.maxChannel(DMX_CHANNEL); // Set max DMX channel size
+
+    Serial.println("DMX Smoke Machine Control Starting...");
   
   /*
  
