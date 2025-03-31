@@ -1,0 +1,96 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Showduino - Recommended Tools</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <style>
+    body {
+      background-color: #000;
+      color: #fff;
+      font-family: 'Courier New', Courier, monospace;
+    }
+    .glitch {
+      position: relative;
+      color: white;
+    }
+    .glitch::before,
+    .glitch::after {
+      content: attr(data-text);
+      position: absolute;
+      left: 0;
+      width: 100%;
+      overflow: hidden;
+      color: #f00;
+      clip: rect(0, 0, 0, 0);
+    }
+    .glitch::before {
+      animation: glitchTop 1.5s infinite linear alternate-reverse;
+    }
+    .glitch::after {
+      animation: glitchBottom 2s infinite linear alternate-reverse;
+      color: #0ff;
+    }
+    @keyframes glitchTop {
+      0% { clip: rect(2px, 9999px, 5px, 0); transform: translate(-2px, -2px); }
+      100% { clip: rect(5px, 9999px, 12px, 0); transform: translate(2px, 0); }
+    }
+    @keyframes glitchBottom {
+      0% { clip: rect(25px, 9999px, 30px, 0); transform: translate(2px, 2px); }
+      100% { clip: rect(40px, 9999px, 45px, 0); transform: translate(-2px, 0); }
+    }
+  </style>
+</head>
+<body class="p-6">
+
+  <header class="text-center mb-10">
+    <h1 class="text-5xl glitch" data-text="Showduino Toolkit">Showduino Toolkit</h1>
+    <p class="text-gray-400 mt-4">Your backstage pass to building terrifying tech. Everything we use to summon spirits (and sensors).</p>
+  </header>
+
+  <section id="recommended-tools" class="max-w-6xl mx-auto">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+
+      <!-- Tool Card 1 -->
+      <div class="bg-gray-900 p-6 rounded-2xl shadow-lg hover:shadow-red-700 transition-all">
+        <h2 class="text-2xl font-bold mb-2">ESP32 Dev Board</h2>
+        <img src="https://m.media-amazon.com/images/I/61jN2wY1jML._AC_SL1500_.jpg" alt="ESP32 Dev Board" class="mb-4 rounded-lg w-full">
+        <p class="text-gray-400 mb-4">The haunted heart of Showduino. Dual-core, WiFi, Bluetooth—what more could a monster ask for?</p>
+        <a href="https://www.amazon.co.uk/dp/B08246MCL2?tag=yourtaghere-21" target="_blank" class="bg-red-600 hover:bg-red-700 text-white py-2 px-4 rounded">Get it on Amazon</a>
+      </div>
+
+      <!-- Tool Card 2 -->
+      <div class="bg-gray-900 p-6 rounded-2xl shadow-lg hover:shadow-red-700 transition-all">
+        <h2 class="text-2xl font-bold mb-2">HC-05 Bluetooth Module</h2>
+        <img src="https://m.media-amazon.com/images/I/61T1cyLx9JL._AC_SL1001_.jpg" alt="HC-05 Bluetooth Module" class="mb-4 rounded-lg w-full">
+        <p class="text-gray-400 mb-4">Summon wireless serial magic from your phone straight into your props—Bluetooth that bites.</p>
+        <a href="https://www.amazon.co.uk/dp/B00INWZRNC?tag=yourtaghere-21" target="_blank" class="bg-red-600 hover:bg-red-700 text-white py-2 px-4 rounded">Get it on Amazon</a>
+      </div>
+
+      <!-- Tool Card 3 -->
+      <div class="bg-gray-900 p-6 rounded-2xl shadow-lg hover:shadow-red-700 transition-all">
+        <h2 class="text-2xl font-bold mb-2">NeoPixel Jewel (7 RGB LEDs)</h2>
+        <img src="https://m.media-amazon.com/images/I/71KHvJk7SDL._AC_SL1500_.jpg" alt="NeoPixel Jewel" class="mb-4 rounded-lg w-full">
+        <p class="text-gray-400 mb-4">This little jewel packs a wicked punch. Perfect for haunted lanterns, eerie glow effects, and magical runes.</p>
+        <a href="https://www.amazon.co.uk/dp/B01DC0KITW?tag=yourtaghere-21" target="_blank" class="bg-red-600 hover:bg-red-700 text-white py-2 px-4 rounded">Get it on Amazon</a>
+      </div>
+
+      <!-- Tool Card 4 -->
+      <div class="bg-gray-900 p-6 rounded-2xl shadow-lg hover:shadow-red-700 transition-all">
+        <h2 class="text-2xl font-bold mb-2">Serial MP3 Player Module</h2>
+        <img src="https://m.media-amazon.com/images/I/51XK1vwiL0L._AC_SL1001_.jpg" alt="MP3 Player Module" class="mb-4 rounded-lg w-full">
+        <p class="text-gray-400 mb-4">Because what's a haunt without screams? Add chilling soundscapes to your creations with this creepy compact sound module.</p>
+        <a href="https://www.amazon.co.uk/dp/B07R8BZMLD?tag=yourtaghere-21" target="_blank" class="bg-red-600 hover:bg-red-700 text-white py-2 px-4 rounded">Get it on Amazon</a>
+      </div>
+
+    </div>
+
+    <p class="mt-10 text-center text-gray-500 text-sm">
+      *Some links are affiliate links. They cost you nothing, but they help power our haunted ambitions. Cheers, mortal.
+    </p>
+  </section>
+
+</body>
+</html>
