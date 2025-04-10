@@ -8,9 +8,9 @@
 #include <WiFi.h>
 
 
-#define IR_RECEIVER_PIN 22       // IR sensor connected to digital pin 2
-#define NEOPIXEL_PIN 27          // NeoPixel data pin
-#define NUM_IND 24            // Number of NeoPixels
+#define IR_RECEIVER_PIN 22  // IR sensor connected to digital pin 2
+#define NEOPIXEL_PIN 27     // NeoPixel data pin
+#define NUM_IND 24          // Number of NeoPixels
 
 Adafruit_NeoPixel WORK_IND(NUM_IND, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
 
@@ -25,50 +25,49 @@ Adafruit_NeoPixel WORK_IND(NUM_IND, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
 #define SD_CS 5
 
 // ----------------------------
-
 #define XPT2046_IRQ 36
 #define XPT2046_MOSI 32
 #define XPT2046_MISO 39
 #define XPT2046_CLK 25
 #define XPT2046_CS 33
 
-#define DEBOUNCE_DELAY 100  // Debounce delay for touch input
+#define DEBOUNCE_DELAY 100
 
 unsigned long lastTouchTime = 0;
 unsigned long lastRTCUpdate = 0;
-String rtcTime = "--:--";  // Default if no RTC data is detected
-static String previousTime = ""; // Track previous time to reduce flicker
 
+String rtcTime = "--:--";
+String previousTime = "";  // ✔️ Fixed: removed static
+String lastKnownRTC = "00:00:00";
 
-// UART setup for ESP32 communication
 #define RX_PIN 3
 #define TX_PIN 1
 
 String incomingData;
 
 #define GREEN_LED 16  // Turns ON at startup for confirmation
-#define BLUE_LED  17  // Blinks ON when touched
-#define RED_LED  4  // Blinks ON when touched
+#define BLUE_LED 17   // Blinks ON when touched
+#define RED_LED 4     // Blinks ON when touched
 
-#define ESP32_MAIN Serial1   // For talking to serial ESP32 MAIN
-#define DEBUG       Serial  // For serial monitor/PC debugging
+#define ESP32_MAIN Serial1  // For talking to serial ESP32 MAIN
+#define DEBUG Serial        // For serial monitor/PC debugging
 
 SPIClass mySpi = SPIClass(VSPI);
 XPT2046_Touchscreen ts(XPT2046_CS, XPT2046_IRQ);
 TFT_eSPI tft = TFT_eSPI();
 
-const char* mainMenu[] = {"Show Menu", "Settings", "Diagnostics"};
+const char *mainMenu[] = { "Show Menu", "Settings", "Diagnostics" };
 const int menuLength = sizeof(mainMenu) / sizeof(mainMenu[0]);
 int selectedMenu = -1;
 
 
 
-String wifiSSID = "";            // WiFi SSID entered via IR keyboard
-String wifiPassword = "";       // WiFi password entered via IR keyboard
+String wifiSSID = "";      // WiFi SSID entered via IR keyboard
+String wifiPassword = "";  // WiFi password entered via IR keyboard
 
 
 // Add "WiFi Configuration" to the Settings Menu
-const char* settingsMenuOptions[] = {"Brightness Control", "WiFi Configuration"};
+const char *settingsMenuOptions[] = { "Brightness Control", "WiFi Configuration" };
 const int settingsMenuLength = sizeof(settingsMenuOptions) / sizeof(settingsMenuOptions[0]);
 
 
@@ -82,31 +81,31 @@ bool inSubMenu = false;
 
 
 const byte buttonCode[44] = {
-  0x5C,0x5D,0x41,0x40,
-  0x58,0x59,0x45,0x44,
-  0x54,0x55,0x49,0x48,
-  0x50,0x51,0x4D,0x4C,
-  0x1C,0x1D,0x1E,0x1F,
-  0x18,0x19,0x1A,0x1B,
-  0x14,0x15,0x16,0x17,
-  0x10,0x11,0x12,0x13,
-  0xC,0xD,0xE,0xF,
-  0x8,0x9,0xA,0xB,
-  0x4,0x5,0x6,0x7
+  0x5C, 0x5D, 0x41, 0x40,
+  0x58, 0x59, 0x45, 0x44,
+  0x54, 0x55, 0x49, 0x48,
+  0x50, 0x51, 0x4D, 0x4C,
+  0x1C, 0x1D, 0x1E, 0x1F,
+  0x18, 0x19, 0x1A, 0x1B,
+  0x14, 0x15, 0x16, 0x17,
+  0x10, 0x11, 0x12, 0x13,
+  0xC, 0xD, 0xE, 0xF,
+  0x8, 0x9, 0xA, 0xB,
+  0x4, 0x5, 0x6, 0x7
 };
 
 const byte ASCIIcode[44] = {
-  0x31,0x32,0x33,0x34,
-  0x35,0x36,0x37,0x38,
-  0x39,0x30,0x2A,0x23,
-  0x41,0x42,0x43,0x44,
-  0x45,0x46,0x47,0x48,
-  0x49,0x4A,0x4B,0x4C,
-  0x4D,0x4E,0x4F,0x50,
-  0x51,0x52,0x53,0x54,
-  0x55,0x56,0x57,0x58,
-  0x59,0x5A,0xFA,0xFB,
-  0xFC,0xFD,0xFE,0xFF
+  0x31, 0x32, 0x33, 0x34,
+  0x35, 0x36, 0x37, 0x38,
+  0x39, 0x30, 0x2A, 0x23,
+  0x41, 0x42, 0x43, 0x44,
+  0x45, 0x46, 0x47, 0x48,
+  0x49, 0x4A, 0x4B, 0x4C,
+  0x4D, 0x4E, 0x4F, 0x50,
+  0x51, 0x52, 0x53, 0x54,
+  0x55, 0x56, 0x57, 0x58,
+  0x59, 0x5A, 0xFA, 0xFB,
+  0xFC, 0xFD, 0xFE, 0xFF
 };
 
 #define SHIFT_KEY 0xA1  // Example Shift key code
@@ -123,16 +122,53 @@ bool shiftActive = false;
 
 // Track Bluetooth State
 bool bluetoothEnabled = false;
-#define DEBOUNCE_DELAY 300  
+#define DEBOUNCE_DELAY 300
 
 // ** Brightness Stages (1-5) **
 int brightnessLevel = 3;  // Default brightness stage (1-5)
 // ** Map Stage Values to Actual Brightness Values **
-int brightnessValues[5] = {50, 100, 150, 200, 255};
+int brightnessValues[5] = { 50, 100, 150, 200, 255 };
+
+
+
+
+unsigned long lastInteractionTime = 0;
+bool screensaverActive = false;
+const unsigned long SCREENSAVER_TIMEOUT = 120000;  // 2 minutes
+
+// Logo dimensions and position
+const int logoWidth = 150;
+const int logoHeight = 60;
+int logoX = 320;  // Start offscreen right
+int logoY = 80;
+
+// Mega RTC time string received via Serial
+extern String lastKnownRTC;  // This should be updated from displayTimeOnTouchscreen()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // ** Function Declarations **
 void drawMenu();
-void drawCenteredText(const char* text, int y, int textSize = 2);
+void drawCenteredText(const char *text, int y, int textSize = 2);
 void drawBackButton();
 void displayTimeOnTouchscreen(String timestamp);
 
@@ -140,10 +176,10 @@ void displayTimeOnTouchscreen(String timestamp);
 
 /* ---------------------------- show menu for starting -----------------------------------*/
 void showMenu() {
-    tft.fillScreen(TFT_BLACK);
-    drawCenteredText("Show Menu", 30, 2);
-    drawCenteredText("Feature Coming Soon", 180, 2);
-    drawBackButton();
+  tft.fillScreen(TFT_BLACK);
+  drawCenteredText("Show Menu", 30, 2);
+  drawCenteredText("Feature Coming Soon", 180, 2);
+  drawBackButton();
 }
 
 
@@ -159,18 +195,24 @@ void handleMenuSelection(int selectedMenu);
 
 
 
+
+
+
 /* ---------------------------- menu design -----------------------------------*/
 
 
-// ** Draw Centered Text **
-void drawCenteredText(const char* text, int y, int textSize) {
-    int charWidth = 6;
-    int textWidth = strlen(text) * charWidth * textSize;
-    int x = (tft.width() - textWidth) / 2;
 
-    tft.setTextSize(textSize);
-    tft.setCursor(x, y);
-    tft.print(text);
+
+
+// ** Draw Centered Text **
+void drawCenteredText(const char *text, int y, int textSize) {
+  int charWidth = 6;
+  int textWidth = strlen(text) * charWidth * textSize;
+  int x = (tft.width() - textWidth) / 2;
+
+  tft.setTextSize(textSize);
+  tft.setCursor(x, y);
+  tft.print(text);
 }
 
 
@@ -180,566 +222,726 @@ void drawCenteredText(const char* text, int y, int textSize) {
 
 // ** Display Time on Touchscreen **
 void displayTimeOnTouchscreen(String timestamp) {
-    if (ESP32_MAIN.available()) {
-        String receivedData = ESP32_MAIN.readStringUntil('\n');
-        receivedData.trim();
+  if (ESP32_MAIN.available()) {
+    String receivedData = ESP32_MAIN.readStringUntil('\n');
+    receivedData.trim();
 
-        if (receivedData.startsWith("TIME:")) {
-            rtcTime = receivedData.substring(5);  // Extract time from data
-        }
+    if (receivedData.startsWith("TIME:")) {
+      rtcTime = receivedData.substring(5);  // Extract time from data
     }
+  }
 
-    if (rtcTime != previousTime) { // Only update if the time has changed
-        tft.setTextSize(2);
-        tft.setTextColor(TFT_WHITE, TFT_BLACK); // White text, black background
-        tft.setCursor(5, 5);                    // Top-left position (x=5, y=5)
-        tft.fillRect(5, 5, 100, 20, TFT_BLACK); // Clear previous time digits only
-        tft.print(rtcTime);                     // Display the RTC time
-        previousTime = rtcTime;                 // Update the previous time
-    }
+  if (rtcTime != previousTime) {  // Only update if the time has changed
+    tft.setTextSize(2);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);  // White text, black background
+    tft.setCursor(5, 5);                     // Top-left position (x=5, y=5)
+    tft.fillRect(5, 5, 100, 20, TFT_BLACK);  // Clear previous time digits only
+    tft.print(rtcTime);                      // Display the RTC time
+    previousTime = rtcTime;                  // Update the previous time
+  }
 }
 
 
 
 
 
-/* ---------------------------- loading/starting -----------------------------------*/
+/* ---------------------------- loading/starting/SCREENSAVER -----------------------------------*/
 // ** Show Loading Screen **
 void showLoadingScreen() {
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextColor(TFT_WHITE);
-    tft.setTextSize(3);
-    drawCenteredText("SHOWDUINO", 40, 3);
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(3);
+  drawCenteredText("SHOWDUINO", 40, 3);
 
-    tft.setTextSize(2);
-    drawCenteredText("SYSTEM v1.0", 70, 2);
+  tft.setTextSize(2);
+  drawCenteredText("SYSTEM v1.0", 70, 2);
 
-    for (int progress = 0; progress <= 100; progress += 10) {
-       delay(500);
-    }
+  for (int progress = 0; progress <= 100; progress += 10) {
+    delay(500);
+  }
 }
 void handleIRInput(uint16_t command) {
-    for (int i = 0; i < 44; i++) {
-        if (command == buttonCode[i]) {
-            Serial.print("Key Pressed: ");
-            Serial.write(ASCIIcode[i]);
-            Serial.println();
-            showFeedback(true);
-            return;
-        }
+  for (int i = 0; i < 44; i++) {
+    if (command == buttonCode[i]) {
+      Serial.print("Key Pressed: ");
+      Serial.write(ASCIIcode[i]);
+      Serial.println();
+      showFeedback(true);
+      return;
     }
+  }
 
-    if (command == SHIFT_KEY) {
-        shiftActive = !shiftActive;
-        Serial.println(shiftActive ? "Shift Activated" : "Shift Deactivated");
-        showFeedback(true);
-    } 
-    else if (command == ENTER_KEY) {
-        Serial.println("Enter Key Pressed");
-        showFeedback(true);
-    } 
-    else if (command == UP_ARROW) {
-        Serial.println("Arrow Up");
-        showFeedback(true);
-    } 
-    else if (command == DOWN_ARROW) {
-        Serial.println("Arrow Down");
-        showFeedback(true);
-    } 
-    else if (command == LEFT_ARROW) {
-        Serial.println("Arrow Left");
-        showFeedback(true);
-    } 
-    else if (command == RIGHT_ARROW) {
-        Serial.println("Arrow Right");
-        showFeedback(true);
-    } 
-    else {
-        Serial.println("Unrecognized Command");
-        showFeedback(false);
-    }
+  if (command == SHIFT_KEY) {
+    shiftActive = !shiftActive;
+    Serial.println(shiftActive ? "Shift Activated" : "Shift Deactivated");
+    showFeedback(true);
+  } else if (command == ENTER_KEY) {
+    Serial.println("Enter Key Pressed");
+    showFeedback(true);
+  } else if (command == UP_ARROW) {
+    Serial.println("Arrow Up");
+    showFeedback(true);
+  } else if (command == DOWN_ARROW) {
+    Serial.println("Arrow Down");
+    showFeedback(true);
+  } else if (command == LEFT_ARROW) {
+    Serial.println("Arrow Left");
+    showFeedback(true);
+  } else if (command == RIGHT_ARROW) {
+    Serial.println("Arrow Right");
+    showFeedback(true);
+  } else {
+    Serial.println("Unrecognized Command");
+    showFeedback(false);
+  }
 }
 void showFeedback(bool success) {
-    WORK_IND.clear();
-    if (success) {
-        for (int i = 0; i < NUM_IND; i++) {
-            WORK_IND.setPixelColor(i, WORK_IND.Color(0, 255, 0));  // Green for recognized input
-        }
-    } else {
-        for (int i = 0; i < NUM_IND; i++) {
-            WORK_IND.setPixelColor(i, WORK_IND.Color(255, 0, 0));  // Red for unrecognized input
-        }
+  WORK_IND.clear();
+  if (success) {
+    for (int i = 0; i < NUM_IND; i++) {
+      WORK_IND.setPixelColor(i, WORK_IND.Color(0, 255, 0));  // Green for recognized input
     }
-    WORK_IND.show();
-    delay(300);
-    WORK_IND.clear();
-    WORK_IND.show();
+  } else {
+    for (int i = 0; i < NUM_IND; i++) {
+      WORK_IND.setPixelColor(i, WORK_IND.Color(255, 0, 0));  // Red for unrecognized input
+    }
+  }
+  WORK_IND.show();
+  delay(300);
+  WORK_IND.clear();
+  WORK_IND.show();
+}
+
+
+void drawBmp(const char *filename, int16_t x, int16_t y) {
+  File bmpFile = SD.open(filename);
+  if (!bmpFile) return;
+
+  if (read16(bmpFile) == 0x4D42) {
+    (void)read32(bmpFile);  // Skip size
+    (void)read32(bmpFile);  // Skip reserved
+    uint32_t imageOffset = read32(bmpFile);
+    (void)read32(bmpFile);  // Header size
+    int bmpWidth = read32(bmpFile);
+    int bmpHeight = read32(bmpFile);
+    if (read16(bmpFile) == 1 && read16(bmpFile) == 24 && read32(bmpFile) == 0) {
+      bmpFile.seek(imageOffset);
+      uint8_t r, g, b;
+      for (int row = bmpHeight - 1; row >= 0; row--) {
+        for (int col = 0; col < bmpWidth; col++) {
+          b = bmpFile.read();
+          g = bmpFile.read();
+          r = bmpFile.read();
+          tft.drawPixel(x + col, y + row, tft.color565(r, g, b));
+        }
+        bmpFile.read();
+        bmpFile.read();
+        bmpFile.read();  // padding
+      }
+    }
+  }
+  bmpFile.close();
+}
+
+uint16_t read16(File &f) {
+  uint16_t result;
+  result = f.read();
+  result |= (f.read() << 8);
+  return result;
+}
+
+uint32_t read32(File &f) {
+  uint32_t result;
+  result = f.read();
+  result |= (f.read() << 8);
+  result |= (f.read() << 16);
+  result |= (f.read() << 24);
+  return result;
 }
 
 
 
 
+void checkInactivity() {
+  if (screensaverActive) return;  // Already active
+
+  if (millis() - lastInteractionTime > SCREENSAVER_TIMEOUT) {
+    startScreensaver();
+  }
+}
+
+void registerInteraction() {
+  lastInteractionTime = millis();
+  if (screensaverActive) exitScreensaver();
+}
+
+void startScreensaver() {
+  screensaverActive = true;
+  tft.fillScreen(TFT_BLACK);
+  logoX = tft.width();  // Start scrolling from right
+}
+
+void exitScreensaver() {
+  screensaverActive = false;
+  drawMenu();  // Redraw your main menu (defined elsewhere)
+}
+
+void updateScreensaver() {
+  if (!screensaverActive) return;
+
+  tft.fillRect(0, logoY, tft.width(), logoHeight, TFT_BLACK);  // Clear previous
+
+  // Simulate scrolling by redrawing logo at new X
+  drawBmp("/showduino.bmp", logoX, logoY);  // You'll need a drawBmp() helper or convert to array
+
+  drawClockOverlay();
+
+  logoX -= 2;  // Move left
+  if (logoX < -logoWidth) logoX = tft.width();
+
+  delay(50);
+}
+
+void drawClockOverlay() {
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setCursor(100, 200);
+  tft.print(lastKnownRTC);  // Uses time received from Mega
+}
 
 /* ----------------------------  menu -----------------------------------*/
-void drawMenu() {
-    inSubMenu = false;
-    tft.fillScreen(TFT_BLACK);
-    tft.fillRect(0, 10, tft.width(), 20, TFT_BLACK);  // Clear old text artifacts
-    drawCenteredText("Main Menu", 10, 2);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextSize(2);
 
-    for (int i = 0; i < menuLength; i++) {
-        int yPosition = firstMenuY + (i * menuSpacing);
-        drawCenteredText(mainMenu[i], yPosition, 2);
-    }
+
+
+
+
+void drawMenu() {
+  inSubMenu = false;
+  tft.fillScreen(TFT_BLACK);
+  tft.fillRect(0, 10, tft.width(), 20, TFT_BLACK);  // Clear old text artifacts
+  drawCenteredText("Main Menu", 10, 2);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setTextSize(2);
+
+  for (int i = 0; i < menuLength; i++) {
+    int yPosition = firstMenuY + (i * menuSpacing);
+    drawCenteredText(mainMenu[i], yPosition, 2);
+  }
 }
 
 // ** Settings Menu **
 void settingsMenu() {
-    delay(300);  // Added delay to prevent instant menu selection
-    tft.fillScreen(TFT_BLACK);
-    drawCenteredText("Settings Menu", 30, 2);
+  delay(300);  // Added delay to prevent instant menu selection
+  tft.fillScreen(TFT_BLACK);
+  drawCenteredText("Settings Menu", 30, 2);
 
-    for (int i = 0; i < settingsMenuLength; i++) {
-        int yPosition = firstMenuY + (i * menuSpacing);
-        drawCenteredText(settingsMenuOptions[i], yPosition, 2);
-    }
+  for (int i = 0; i < settingsMenuLength; i++) {
+    int yPosition = firstMenuY + (i * menuSpacing);
+    drawCenteredText(settingsMenuOptions[i], yPosition, 2);
+  }
 
-    drawBackButton();
+  drawBackButton();
 
-    while (true) {
-        if (ts.tirqTouched() && ts.touched()) {
-            TS_Point p = ts.getPoint();
-            int touchY = map(p.y, 0, 4095, 0, tft.height());
+  while (true) {
+    if (ts.tirqTouched() && ts.touched()) {
+      TS_Point p = ts.getPoint();
+      int touchY = map(p.y, 0, 4095, 0, tft.height());
 
-            if (touchY >= firstMenuY && touchY <= firstMenuY + (settingsMenuLength * menuSpacing)) {
-                int touchedItem = (touchY - firstMenuY) / menuSpacing;
-                switch (touchedItem) {
-                    case 0:
-                        brightnessMenu();
-                        return;
-                    case 1:
-                        wifiConfigMenu();
-                        return;
-                    default:
-                        break;
-                }
-            }
-
-            if (touchY >= backButtonY - 20 && touchY <= backButtonY + 30) {
-                drawMenu();
-                inSubMenu = false;
-                delay(200);  // Debounce
-                return;
-            }
+      if (touchY >= firstMenuY && touchY <= firstMenuY + (settingsMenuLength * menuSpacing)) {
+        int touchedItem = (touchY - firstMenuY) / menuSpacing;
+        switch (touchedItem) {
+          case 0:
+            brightnessMenu();
+            return;
+          case 1:
+            wifiConfigMenu();
+            return;
+          default:
+            break;
         }
-        delay(100);
+      }
+
+      if (touchY >= backButtonY - 20 && touchY <= backButtonY + 30) {
+        drawMenu();
+        inSubMenu = false;
+        delay(200);  // Debounce
+        return;
+      }
     }
+    delay(100);
+  }
 }
+
+
+
+
+
+
+
+
+
+
+
 /* ---------------------------- wifi conf -----------------------------------*/
-void connectToWiFi(const char* ssid) {
-    tft.fillScreen(TFT_BLACK);
-    drawCenteredText("Connecting...", 100, 2);
 
-    WiFi.begin(ssid, wifiPassword.c_str());
 
-    unsigned long startTime = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - startTime < 10000) { // 10 seconds timeout
-        delay(500);
-    }
+void connectToWiFi(const char *ssid) {
+  tft.fillScreen(TFT_BLACK);
+  drawCenteredText("Connecting...", 100, 2);
 
-    if (WiFi.status() == WL_CONNECTED) {
-        drawCenteredText("Connected Successfully!", 120, 2);
-    } else {
-        drawCenteredText("Connection Failed!", 120, 2);
-    }
+  WiFi.begin(ssid, wifiPassword.c_str());
 
-    delay(2000);
-    wifiScanMenu();
+  unsigned long startTime = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startTime < 10000) {  // 10 seconds timeout
+    delay(500);
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    drawCenteredText("Connected Successfully!", 120, 2);
+  } else {
+    drawCenteredText("Connection Failed!", 120, 2);
+  }
+
+  delay(2000);
+  wifiScanMenu();
 }
 // ** WiFi Scan Menu **
 void wifiScanMenu() {
-    int selectedNetwork = -1;
-    const int MAX_ITEMS_PER_PAGE = 4;
-    int currentPage = 0;
+  int selectedNetwork = -1;
+  const int MAX_ITEMS_PER_PAGE = 4;
+  int currentPage = 0;
 
-    while (true) {
-        tft.fillScreen(TFT_BLACK);
-        drawCenteredText("WiFi Networks", 30, 2);
+  while (true) {
+    tft.fillScreen(TFT_BLACK);
+    drawCenteredText("WiFi Networks", 30, 2);
 
-        int numNetworks = WiFi.scanNetworks();
-        if (numNetworks == 0) {
-            drawCenteredText("No Networks Found", 80, 2);
-            delay(2000);
-            settingsMenu();
-            return;
-        }
-
-        int startIdx = currentPage * MAX_ITEMS_PER_PAGE;
-        int endIdx = min(startIdx + MAX_ITEMS_PER_PAGE, numNetworks);
-
-        for (int i = startIdx; i < endIdx; i++) {
-            if (i == selectedNetwork) {
-                tft.setTextColor(TFT_YELLOW, TFT_BLACK);  // Highlight selected network
-            } else {
-                tft.setTextColor(TFT_WHITE, TFT_BLACK);  // Normal text
-            }
-            int yPosition = firstMenuY + ((i - startIdx) * menuSpacing);
-            drawCenteredText(WiFi.SSID(i).c_str(), yPosition, 2);
-        }
-
-        drawCenteredText("< Prev     Next >", backButtonY, 2);
-        drawBackButton();
-
-        if (ts.tirqTouched() && ts.touched()) {
-            TS_Point p = ts.getPoint();
-            int touchY = map(p.y, 0, 4095, 0, tft.height());
-
-            for (int i = startIdx; i < endIdx; i++) {
-                int yPosition = firstMenuY + ((i - startIdx) * menuSpacing);
-                if (touchY >= yPosition && touchY <= yPosition + menuSpacing) {
-                    selectedNetwork = i;  // Store selected network index
-                }
-            }
-
-            if (touchY >= backButtonY - 20 && touchY <= backButtonY + 30) {
-                if (selectedNetwork != -1) {
-                    connectToWiFi(WiFi.SSID(selectedNetwork).c_str());
-                    return;
-                }
-                settingsMenu();
-                return;
-            }
-        }
-        delay(100);
+    int numNetworks = WiFi.scanNetworks();
+    if (numNetworks == 0) {
+      drawCenteredText("No Networks Found", 80, 2);
+      delay(2000);
+      settingsMenu();
+      return;
     }
+
+    int startIdx = currentPage * MAX_ITEMS_PER_PAGE;
+    int endIdx = min(startIdx + MAX_ITEMS_PER_PAGE, numNetworks);
+
+    for (int i = startIdx; i < endIdx; i++) {
+      if (i == selectedNetwork) {
+        tft.setTextColor(TFT_YELLOW, TFT_BLACK);  // Highlight selected network
+      } else {
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);  // Normal text
+      }
+      int yPosition = firstMenuY + ((i - startIdx) * menuSpacing);
+      drawCenteredText(WiFi.SSID(i).c_str(), yPosition, 2);
+    }
+
+    drawCenteredText("< Prev     Next >", backButtonY, 2);
+    drawBackButton();
+
+    if (ts.tirqTouched() && ts.touched()) {
+      TS_Point p = ts.getPoint();
+      int touchY = map(p.y, 0, 4095, 0, tft.height());
+
+      for (int i = startIdx; i < endIdx; i++) {
+        int yPosition = firstMenuY + ((i - startIdx) * menuSpacing);
+        if (touchY >= yPosition && touchY <= yPosition + menuSpacing) {
+          selectedNetwork = i;  // Store selected network index
+        }
+      }
+
+      if (touchY >= backButtonY - 20 && touchY <= backButtonY + 30) {
+        if (selectedNetwork != -1) {
+          connectToWiFi(WiFi.SSID(selectedNetwork).c_str());
+          return;
+        }
+        settingsMenu();
+        return;
+      }
+    }
+    delay(100);
+  }
 }
 // WiFi Scan Function
 void scanWiFiNetworks() {
-    tft.fillScreen(TFT_BLACK);
-    drawCenteredText("Scanning for Networks...", 30, 2);
-    int numNetworks = WiFi.scanNetworks();
+  tft.fillScreen(TFT_BLACK);
+  drawCenteredText("Scanning for Networks...", 30, 2);
+  int numNetworks = WiFi.scanNetworks();
 
-    if (numNetworks == 0) {
-        drawCenteredText("No Networks Found", 80, 2);
-        delay(2000);
-        settingsMenu();
-        return;
-    }
+  if (numNetworks == 0) {
+    drawCenteredText("No Networks Found", 80, 2);
+    delay(2000);
+    settingsMenu();
+    return;
+  }
 
-    for (int i = 0; i < numNetworks; i++) {
-        drawCenteredText(WiFi.SSID(i).c_str(), 80 + (i * 20), 2);
-    }
+  for (int i = 0; i < numNetworks; i++) {
+    drawCenteredText(WiFi.SSID(i).c_str(), 80 + (i * 20), 2);
+  }
 
-    drawBackButton();
+  drawBackButton();
 }
 // IR Keyboard Handling for Text Entry
 void wifiConfigMenu() {
-    scanWiFiNetworks();
-    wifiSSID = "";
-    wifiPassword = ""; // Clear previous input
+  scanWiFiNetworks();
+  wifiSSID = "";
+  wifiPassword = "";  // Clear previous input
 
-    while (true) {
-        if (irrecv.decode(&results)) {
-            if (results.value == ENTER_KEY) {
-                tft.fillScreen(TFT_BLACK);
-                drawCenteredText("Connecting...", 100, 2);
-                connectToWiFi();
-                delay(2000);
-                settingsMenu();
-                return;
-            } else {
-                char character = mapIRCodeToCharacter(results.value);
-                if (character != 0) {
-                    wifiPassword += character;
-                    tft.fillRect(0, 100, tft.width(), 20, TFT_BLACK); // Clear old password text
-                    drawCenteredText(wifiPassword.c_str(), 100, 2);
-                }
-            }
-            irrecv.resume();
+  while (true) {
+    if (irrecv.decode(&results)) {
+      if (results.value == ENTER_KEY) {
+        tft.fillScreen(TFT_BLACK);
+        drawCenteredText("Connecting...", 100, 2);
+        connectToWiFi();
+        delay(2000);
+        settingsMenu();
+        return;
+      } else {
+        char character = mapIRCodeToCharacter(results.value);
+        if (character != 0) {
+          wifiPassword += character;
+          tft.fillRect(0, 100, tft.width(), 20, TFT_BLACK);  // Clear old password text
+          drawCenteredText(wifiPassword.c_str(), 100, 2);
         }
-
-        if (ts.tirqTouched() && ts.touched()) {
-            TS_Point p = ts.getPoint();
-            int touchY = map(p.y, 0, 4095, 0, tft.height());
-
-            if (touchY >= backButtonY - 20 && touchY <= backButtonY + 30) {
-                settingsMenu();
-                return;
-            }
-        }
-        delay(100);
+      }
+      irrecv.resume();
     }
+
+    if (ts.tirqTouched() && ts.touched()) {
+      TS_Point p = ts.getPoint();
+      int touchY = map(p.y, 0, 4095, 0, tft.height());
+
+      if (touchY >= backButtonY - 20 && touchY <= backButtonY + 30) {
+        settingsMenu();
+        return;
+      }
+    }
+    delay(100);
+  }
 }
 // WiFi Connection Function
 void connectToWiFi() {
-    WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+  WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
 
-    unsigned long startTime = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - startTime < 10000) { // 10 seconds timeout
-        delay(500);
-    }
+  unsigned long startTime = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startTime < 10000) {  // 10 seconds timeout
+    delay(500);
+  }
 
-    if (WiFi.status() == WL_CONNECTED) {
-        drawCenteredText("Connected Successfully!", 120, 2);
-    } else {
-        drawCenteredText("Connection Failed!", 120, 2);
-    }
+  if (WiFi.status() == WL_CONNECTED) {
+    drawCenteredText("Connected Successfully!", 120, 2);
+  } else {
+    drawCenteredText("Connection Failed!", 120, 2);
+  }
 }
+
+
+
+
+
+
+
 
 
 /* ----------------------------  menus    /  sub menus  -----------------------------------*/
 
+
+
+
+
+
+
+
+
 // ** Brightness Control Submenu **
 void brightnessMenu() {
-    tft.fillScreen(TFT_BLACK);
-    drawCenteredText("Brightness Control", 30, 2);
+  tft.fillScreen(TFT_BLACK);
+  drawCenteredText("Brightness Control", 30, 2);
 
-    drawCenteredText(("Current: Stage " + String(brightnessLevel)).c_str(), 100, 2);
-    drawCenteredText("Tap to Increase", 140, 2);
-    drawBackButton();
+  drawCenteredText(("Current: Stage " + String(brightnessLevel)).c_str(), 100, 2);
+  drawCenteredText("Tap to Increase", 140, 2);
+  drawBackButton();
 
-    while (true) {
-        if (ts.tirqTouched() && ts.touched()) {
-            TS_Point p = ts.getPoint();
-            int touchY = map(p.y, 0, 4095, 0, tft.height());
+  while (true) {
+    if (ts.tirqTouched() && ts.touched()) {
+      TS_Point p = ts.getPoint();
+      int touchY = map(p.y, 0, 4095, 0, tft.height());
 
-            if (touchY >= 140 && touchY <= 180) {
-                brightnessLevel++;
-                if (brightnessLevel > 5) brightnessLevel = 1;  // Loop back to Stage 1
+      if (touchY >= 140 && touchY <= 180) {
+        brightnessLevel++;
+        if (brightnessLevel > 5) brightnessLevel = 1;  // Loop back to Stage 1
 
-                analogWrite(TFT_BL, brightnessValues[brightnessLevel - 1]);
+        analogWrite(TFT_BL, brightnessValues[brightnessLevel - 1]);
 
-                tft.fillRect(0, 100, tft.width(), 20, TFT_BLACK);  // Clear old brightness text
-                drawCenteredText(("Current: Stage " + String(brightnessLevel)).c_str(), 100, 2);
-            }
+        tft.fillRect(0, 100, tft.width(), 20, TFT_BLACK);  // Clear old brightness text
+        drawCenteredText(("Current: Stage " + String(brightnessLevel)).c_str(), 100, 2);
+      }
 
-            if (touchY >= backButtonY - 20 && touchY <= backButtonY + 30) {
-                settingsMenu();
-                return;
-            }
-        }
-        delay(100);
+      if (touchY >= backButtonY - 20 && touchY <= backButtonY + 30) {
+        settingsMenu();
+        return;
+      }
     }
+    delay(100);
+  }
 }
+
+
+
+
+
+
+
+
+
+
 /* ---------------------------- diagnostics menu  -----------------------------------*/
+
+
+
+
+
+
 int diagnosticsSelection = 0;  // Tracks submenu selection
 
 void diagnosticsMenu() {
-    tft.fillScreen(TFT_BLACK); 
-    tft.setTextSize(2);
-    tft.setTextColor(TFT_WHITE);
-    tft.setCursor(10, 10);
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_WHITE);
+  tft.setCursor(10, 10);
 
-  
-    drawCenteredText("Diagnostics Menu", 10, 2);
 
-    drawCenteredText("1. System Status", 40, 2);
-    drawCenteredText("2. Relay Check", 60, 2);
-    drawCenteredText("3. NeoPixel Test", 80, 2);
-    drawCenteredText("4. Voltage/Temp Readings", 100, 2);
-    drawCenteredText("5. View Log File", 120, 2);
-    drawBackButton();
-    while (true) {
-        if (ESP32_MAIN.available()) {
-            String receivedData = ESP32_MAIN.readStringUntil('\n');
-            receivedData.trim();
+  drawCenteredText("Diagnostics Menu", 10, 2);
 
-            if (receivedData == "1") {
-                displaySystemStatus();
-            } 
-            else if (receivedData == "2") {
-                requestRelayStatus();
-            } 
-            else if (receivedData == "3") {
-                requestNeoPixelStatus();
-            } 
-            else if (receivedData == "4") {
-                requestVoltageTemp();
-            } 
-            else if (receivedData == "5") {
-                viewLogFile();
-            } 
-            else if (receivedData == "6") {
-                return;  // Exit the diagnostics menu
-            }
-        }
+  drawCenteredText("1. System Status", 40, 2);
+  drawCenteredText("2. Relay Check", 60, 2);
+  drawCenteredText("3. NeoPixel Test", 80, 2);
+  drawCenteredText("4. Voltage/Temp Readings", 100, 2);
+  drawCenteredText("5. View Log File", 120, 2);
+  drawBackButton();
+  while (true) {
+    if (ESP32_MAIN.available()) {
+      String receivedData = ESP32_MAIN.readStringUntil('\n');
+      receivedData.trim();
+
+      if (receivedData == "1") {
+        displaySystemStatus();
+      } else if (receivedData == "2") {
+        requestRelayStatus();
+      } else if (receivedData == "3") {
+        requestNeoPixelStatus();
+      } else if (receivedData == "4") {
+        requestVoltageTemp();
+      } else if (receivedData == "5") {
+        viewLogFile();
+      } else if (receivedData == "6") {
+        return;  // Exit the diagnostics menu
+      }
     }
+  }
 }
 
 // === Individual Diagnostic Functions === //
 
-void displaySystemStatus() {
-    logMessage("=== SYSTEM STATUS ===");
-    logMessage("RTC Time: " + (rtcTime.isEmpty() ? "ERROR - No time data received" : rtcTime));
-    
-    if (!SD.begin(SS)) {
-        logMessage("SD Card: ERROR - Mount Failed");
-    } else {
-        uint64_t totalSpace = SD.totalBytes() / (1024 * 1024);
-        uint64_t usedSpace = SD.usedBytes() / (1024 * 1024);
-        logMessage("SD Card: OK - " + String(usedSpace) + "MB used of " + String(totalSpace) + "MB");
-    }
 
-    logMessage("=== SYSTEM STATUS COMPLETE ===");
+void displaySystemStatus() {
+  logMessage("=== SYSTEM STATUS ===");
+  logMessage("RTC Time: " + (rtcTime.isEmpty() ? "ERROR - No time data received" : rtcTime));
+
+  if (!SD.begin(SS)) {
+    logMessage("SD Card: ERROR - Mount Failed");
+  } else {
+    uint64_t totalSpace = SD.totalBytes() / (1024 * 1024);
+    uint64_t usedSpace = SD.usedBytes() / (1024 * 1024);
+    logMessage("SD Card: OK - " + String(usedSpace) + "MB used of " + String(totalSpace) + "MB");
+  }
+
+  logMessage("=== SYSTEM STATUS COMPLETE ===");
 }
 
 void requestRelayStatus() {
-    ESP32_MAIN.println("RELAY_CHECK");
-    delay(100);
-    if (ESP32_MAIN.available()) {
-        String relayStatus = ESP32_MAIN.readStringUntil('\n');
-        logMessage("Relays: " + relayStatus);
-    } else {
-        logMessage("Relays: ERROR - No response from Mega");
-    }
+  ESP32_MAIN.println("RELAY_CHECK");
+  delay(100);
+  if (ESP32_MAIN.available()) {
+    String relayStatus = ESP32_MAIN.readStringUntil('\n');
+    logMessage("Relays: " + relayStatus);
+  } else {
+    logMessage("Relays: ERROR - No response from Mega");
+  }
 }
 
 void requestNeoPixelStatus() {
-    ESP32_MAIN.println("NEO_CHECK");
-    delay(100);
-    if (ESP32_MAIN.available()) {
-        String neoStatus = ESP32_MAIN.readStringUntil('\n');
-        logMessage("NeoPixel: " + neoStatus);
-    } else {
-        logMessage("NeoPixel: ERROR - No response from Mega");
-    }
+  ESP32_MAIN.println("NEO_CHECK");
+  delay(100);
+  if (ESP32_MAIN.available()) {
+    String neoStatus = ESP32_MAIN.readStringUntil('\n');
+    logMessage("NeoPixel: " + neoStatus);
+  } else {
+    logMessage("NeoPixel: ERROR - No response from Mega");
+  }
 }
 
 void requestVoltageTemp() {
-    ESP32_MAIN.println("VOLTAGE_CHECK");
-    delay(100);
-    if (ESP32_MAIN.available()) {
-        String voltageStatus = ESP32_MAIN.readStringUntil('\n');
-        logMessage("Voltage/Temp: " + voltageStatus);
-    } else {
-        logMessage("Voltage/Temp: ERROR - No response from Mega");
-    }
+  ESP32_MAIN.println("VOLTAGE_CHECK");
+  delay(100);
+  if (ESP32_MAIN.available()) {
+    String voltageStatus = ESP32_MAIN.readStringUntil('\n');
+    logMessage("Voltage/Temp: " + voltageStatus);
+  } else {
+    logMessage("Voltage/Temp: ERROR - No response from Mega");
+  }
 }
 
 void viewLogFile() {
-    File logFile = SD.open("/log.txt");
-    if (!logFile) {
-        logMessage("Log Viewer: ERROR - Log file not found");
-        return;
-    }
+  File logFile = SD.open("/log.txt");
+  if (!logFile) {
+    logMessage("Log Viewer: ERROR - Log file not found");
+    return;
+  }
 
-    logMessage("=== LOG FILE CONTENT ===");
-    while (logFile.available()) {
-        String logEntry = logFile.readStringUntil('\n');
-        logMessage(logEntry);
-    }
-    logMessage("=== END OF LOG FILE ===");
+  logMessage("=== LOG FILE CONTENT ===");
+  while (logFile.available()) {
+    String logEntry = logFile.readStringUntil('\n');
+    logMessage(logEntry);
+  }
+  logMessage("=== END OF LOG FILE ===");
 
-    logFile.close();
+  logFile.close();
 }
+
+
+
+
+
+
+
+
 
 /* ----------------------------  menus    /  sub menu selection -----------------------------------*/
 
+
+
+
+
+
+
+
 void handleMenuSelection(int selection) {
-    switch (selection) {
-        case 1:
-            displaySystemStatus();
-            break;
-        case 2:
-            diagnosticsMenu();  // Navigate to the Diagnostics submenu
-            break;
-        case 3:
-            // Other menus or features
-            break;
-        default:
-            logMessage("Invalid menu option selected.");
-    }
+  switch (selection) {
+    case 0:
+      showMenu();  // "Show Menu"
+      break;
+    case 1:
+      settingsMenu();  // "Settings"
+      break;
+    case 2:
+      diagnosticsMenu();  // "Diagnostics"
+      break;
+    default:
+      logMessage("Invalid menu option selected.");
+  }
 }
 
 void drawBackButton() {
-    drawCenteredText("Back", backButtonY, 2);
+  drawCenteredText("Back", backButtonY, 2);
 }
 
 // Map IR codes to characters for password entry
 char mapIRCodeToCharacter(uint16_t command) {
-    for (int i = 0; i < 44; i++) {
-        if (command == buttonCode[i]) {
-            return ASCIIcode[i];
-        }
+  for (int i = 0; i < 44; i++) {
+    if (command == buttonCode[i]) {
+      return ASCIIcode[i];
     }
-    return 0;  // Return 0 if no match
+  }
+  return 0;  // Return 0 if no match
 }
 
-/* ----------------------------  sd card functions  -----------------------------------*/
 
-extern String rtcTime; // Use rtcTime from your existing time system
 
-void logMessage(const String& message) {
-    String timestamp = rtcTime.isEmpty() ? "[UNKNOWN TIME]" : "[" + rtcTime + "]";
 
-    String logEntry = timestamp + " " + message + "\n";
 
-    // Log Rotation System
-    File logFile = SD.open("/log.txt", FILE_APPEND);
-    if (logFile && logFile.size() >= 1024 * 10) {  // Rotate log if > 10KB
-        logFile.close();
-        String archiveName = "/log_" + rtcTime + ".txt";
-        SD.rename("/log.txt", archiveName.c_str());
-    }
 
-    appendFile(SD, "/log.txt", logEntry.c_str());
-    Serial.print(logEntry);  // Optional: Also prints logs in Serial Monitor
+
+/* ----------------------------  sd card functions  //  NEVER EVER TOUCH THESE!! -----------------------------------*/
+
+
+
+
+
+
+
+
+
+
+extern String rtcTime;  // Use rtcTime from your existing time system
+
+void logMessage(const String &message) {
+  String timestamp = rtcTime.isEmpty() ? "[UNKNOWN TIME]" : "[" + rtcTime + "]";
+
+  String logEntry = timestamp + " " + message + "\n";
+
+  // Log Rotation System
+  File logFile = SD.open("/log.txt", FILE_APPEND);
+  if (logFile && logFile.size() >= 1024 * 10) {  // Rotate log if > 10KB
+    logFile.close();
+    String archiveName = "/log_" + rtcTime + ".txt";
+    SD.rename("/log.txt", archiveName.c_str());
+  }
+
+  appendFile(SD, "/log.txt", logEntry.c_str());
+  Serial.print(logEntry);  // Optional: Also prints logs in Serial Monitor
 }
 
 void setupSDCard() {
-    SPIClass spi = SPIClass(VSPI);
+  SPIClass spi = SPIClass(VSPI);
 
-    if (!SD.begin(SS, spi, 80000000)) {
-        logMessage("ERROR: Card Mount Failed");
-        return;
-    }
+  if (!SD.begin(SS, spi, 80000000)) {
+    logMessage("ERROR: Card Mount Failed");
+    return;
+  }
 
-    uint8_t cardType = SD.cardType();
+  uint8_t cardType = SD.cardType();
 
-    if (cardType == CARD_NONE) {
-        logMessage("ERROR: No SD card attached");
-        return;
-    }
+  if (cardType == CARD_NONE) {
+    logMessage("ERROR: No SD card attached");
+    return;
+  }
 
-    logMessage("INFO: SD card successfully mounted");
+  logMessage("INFO: SD card successfully mounted");
 
-    logMessage("SD Card Type: " + String(
-        cardType == CARD_MMC ? "MMC" :
-        cardType == CARD_SD ? "SDSC" :
-        cardType == CARD_SDHC ? "SDHC" : "UNKNOWN"
-    ));
+  logMessage("SD Card Type: " + String(cardType == CARD_MMC ? "MMC" : cardType == CARD_SD   ? "SDSC"
+                                                                    : cardType == CARD_SDHC ? "SDHC"
+                                                                                            : "UNKNOWN"));
 
-    uint64_t cardSize = SD.cardSize() / (1024 * 1024);
-    logMessage("SD Card Size: " + String(cardSize) + "MB");
+  uint64_t cardSize = SD.cardSize() / (1024 * 1024);
+  logMessage("SD Card Size: " + String(cardSize) + "MB");
 
-    // Example log entries for file operations
-    logMessage("Creating directory '/mydir'");
-    createDir(SD, "/mydir");
+  // Example log entries for file operations
+  logMessage("Creating directory '/mydir'");
+  createDir(SD, "/mydir");
 
-    logMessage("Writing to '/hello.txt'");
-    writeFile(SD, "/hello.txt", "Hello ");
+  logMessage("Writing to '/hello.txt'");
+  writeFile(SD, "/hello.txt", "Hello ");
 
-    logMessage("Appending to '/hello.txt'");
-    appendFile(SD, "/hello.txt", "World!\n");
+  logMessage("Appending to '/hello.txt'");
+  appendFile(SD, "/hello.txt", "World!\n");
 
-    logMessage("Renaming '/hello.txt' to '/foo.txt'");
-    renameFile(SD, "/hello.txt", "/foo.txt");
+  logMessage("Renaming '/hello.txt' to '/foo.txt'");
+  renameFile(SD, "/hello.txt", "/foo.txt");
 
-    logMessage("Reading '/foo.txt'");
-    readFile(SD, "/foo.txt");
+  logMessage("Reading '/foo.txt'");
+  readFile(SD, "/foo.txt");
 
-    logMessage("File IO test on '/test.txt'");
-    testFileIO(SD, "/test.txt");
+  logMessage("File IO test on '/test.txt'");
+  testFileIO(SD, "/test.txt");
 
-    logMessage("Total space: " + String(SD.totalBytes() / (1024 * 1024)) + "MB");
-    logMessage("Used space: " + String(SD.usedBytes() / (1024 * 1024)) + "MB");
+  logMessage("Total space: " + String(SD.totalBytes() / (1024 * 1024)) + "MB");
+  logMessage("Used space: " + String(SD.usedBytes() / (1024 * 1024)) + "MB");
 
-    logMessage("INFO: SD card setup complete");
+  logMessage("INFO: SD card setup complete");
 }
 
-void listDir(fs::FS &fs, const char * dirname, uint8_t levels) {
+void listDir(fs::FS &fs, const char *dirname, uint8_t levels) {
   Serial.printf("Listing directory: %s\n", dirname);
 
   File root = fs.open(dirname);
@@ -770,7 +972,7 @@ void listDir(fs::FS &fs, const char * dirname, uint8_t levels) {
   }
 }
 
-void createDir(fs::FS &fs, const char * path) {
+void createDir(fs::FS &fs, const char *path) {
   Serial.printf("Creating Dir: %s\n", path);
   if (fs.mkdir(path)) {
     Serial.println("Dir created");
@@ -779,7 +981,7 @@ void createDir(fs::FS &fs, const char * path) {
   }
 }
 
-void removeDir(fs::FS &fs, const char * path) {
+void removeDir(fs::FS &fs, const char *path) {
   Serial.printf("Removing Dir: %s\n", path);
   if (fs.rmdir(path)) {
     Serial.println("Dir removed");
@@ -788,7 +990,7 @@ void removeDir(fs::FS &fs, const char * path) {
   }
 }
 
-void readFile(fs::FS &fs, const char * path) {
+void readFile(fs::FS &fs, const char *path) {
   Serial.printf("Reading file: %s\n", path);
 
   File file = fs.open(path);
@@ -804,7 +1006,7 @@ void readFile(fs::FS &fs, const char * path) {
   file.close();
 }
 
-void writeFile(fs::FS &fs, const char * path, const char * message) {
+void writeFile(fs::FS &fs, const char *path, const char *message) {
   Serial.printf("Writing file: %s\n", path);
 
   File file = fs.open(path, FILE_WRITE);
@@ -820,7 +1022,7 @@ void writeFile(fs::FS &fs, const char * path, const char * message) {
   file.close();
 }
 
-void appendFile(fs::FS &fs, const char * path, const char * message) {
+void appendFile(fs::FS &fs, const char *path, const char *message) {
   Serial.printf("Appending to file: %s\n", path);
 
   File file = fs.open(path, FILE_APPEND);
@@ -836,7 +1038,7 @@ void appendFile(fs::FS &fs, const char * path, const char * message) {
   file.close();
 }
 
-void renameFile(fs::FS &fs, const char * path1, const char * path2) {
+void renameFile(fs::FS &fs, const char *path1, const char *path2) {
   Serial.printf("Renaming file %s to %s\n", path1, path2);
   if (fs.rename(path1, path2)) {
     Serial.println("File renamed");
@@ -845,7 +1047,7 @@ void renameFile(fs::FS &fs, const char * path1, const char * path2) {
   }
 }
 
-void deleteFile(fs::FS &fs, const char * path) {
+void deleteFile(fs::FS &fs, const char *path) {
   Serial.printf("Deleting file: %s\n", path);
   if (fs.remove(path)) {
     Serial.println("File deleted");
@@ -854,7 +1056,7 @@ void deleteFile(fs::FS &fs, const char * path) {
   }
 }
 
-void testFileIO(fs::FS &fs, const char * path) {
+void testFileIO(fs::FS &fs, const char *path) {
   File file = fs.open(path);
   static uint8_t buf[512];
   size_t len = 0;
@@ -908,62 +1110,88 @@ void testFileIO(fs::FS &fs, const char * path) {
 
 
 void setup() {
-    DEBUG.begin(115200);  
-       Serial2.begin(115200, SERIAL_8N1, 27, 26);  // ESP32 TX (26) → Mega RX1 (19), ESP32 RX (27) ← Mega TX1 (18)
-        ESP32_MAIN.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);  // UART communication with Mega
-         tft.init();
-    tft.setRotation(3);
-      
-    showLoadingScreen();
-    setupSDCard();
-    DEBUG.println("[DEBUG] ESP32 Boot Successful!");
-     irrecv.enableIRIn(); // Start the IR receiver
-  
-    
-    
-   
-     
-    mySpi.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
-    ts.begin(mySpi);
-    ts.setRotation(3);
-   
-     drawMenu();
+  DEBUG.begin(115200);
+  Serial2.begin(115200, SERIAL_8N1, 27, 26);             // ESP32 TX (26) → Mega RX1 (19), ESP32 RX (27) ← Mega TX1 (18)
+  ESP32_MAIN.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);  // UART communication with Mega
+  tft.init();
+  tft.setRotation(3);
+
+  showLoadingScreen();
+  setupSDCard();
+  DEBUG.println("[DEBUG] ESP32 Boot Successful!");
+  irrecv.enableIRIn();  // Start the IR receiver
+
+  pinMode(GREEN_LED, OUTPUT);
+  digitalWrite(GREEN_LED, HIGH);  // Start with LED off
+  pinMode(RED_LED, OUTPUT);
+  digitalWrite(RED_LED, LOW);  // Start with LED off
+  pinMode(BLUE_LED, OUTPUT);
+  digitalWrite(BLUE_LED, LOW);  // Start with LED off
+
+  mySpi.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
+  ts.begin(mySpi);
+
+  drawMenu();
 }
 
+
+
+
+
+
+
+
+
+/* ----------------------------  LOOP  -----------------------------------*/
+
+
+
+
+
+
+
+
+
 void loop() {
-     displayTimeOnTouchscreen(rtcTime);
+  displayTimeOnTouchscreen(rtcTime);
 
-     if (ESP32_MAIN.available()) {
-        String receivedData = ESP32_MAIN.readStringUntil('\n');
-        receivedData.trim();
+  if (ESP32_MAIN.available()) {
+    String receivedData = ESP32_MAIN.readStringUntil('\n');
+    receivedData.trim();
 
-        if (receivedData.startsWith("TIME:")) {
-            rtcTime = receivedData.substring(5);  // Extract time from data
-        }
+    if (receivedData.startsWith("TIME:")) {
+      rtcTime = receivedData.substring(5);  // Extract time from data
     }
+  }
 
 
-    if (irrecv.decode(&results)) {
-        handleIRInput(results.value);
-        irrecv.resume();
+  if (irrecv.decode(&results)) {
+    handleIRInput(results.value);
+    irrecv.resume();
+  }
+
+  if (ts.tirqTouched() && ts.touched()) {
+    TS_Point p = ts.getPoint();
+    int touchY = map(p.y, 0, 4095, 0, tft.height());
+    registerInteraction();
+
+    // Touch feedback
+    digitalWrite(GREEN_LED, LOW);  // Turn off green when touching
+    digitalWrite(BLUE_LED, HIGH);  // Turn on blue to indicate active touch
+
+    if (!inSubMenu) {
+      if (touchY >= firstMenuY && touchY <= firstMenuY + (menuLength * menuSpacing)) {
+        int touchedItem = floor((touchY - firstMenuY) / (float)menuSpacing);
+        touchedItem = constrain(touchedItem, 0, menuLength - 1);
+        selectedMenu = touchedItem;
+        handleMenuSelection(selectedMenu);
+      }
+    } else {
+      digitalWrite(BLUE_LED, LOW);  // Turn off blue when backing out
+      if (touchY >= backButtonY - 20 && touchY <= backButtonY + 20) {
+        drawMenu();
+        inSubMenu = false;
+      }
     }
- 
-    if (ts.tirqTouched() && ts.touched()) {
-        TS_Point p = ts.getPoint();
-        int touchY = map(p.y, 0, 4095, 0, tft.height());
-
-        if (!inSubMenu) {
-            if (touchY >= firstMenuY && touchY <= firstMenuY + (menuLength * menuSpacing)) {
-                int touchedItem = floor((touchY - firstMenuY) / (float)menuSpacing);
-                touchedItem = constrain(touchedItem, 0, menuLength - 1);
-                selectedMenu = touchedItem;
-                handleMenuSelection(selectedMenu);
-            }
-        } else {
-            if (touchY >= backButtonY - 20 && touchY <= backButtonY + 20) {
-                drawMenu();
-                inSubMenu = false;
-            }
-        }
-    }
+  }
 }
