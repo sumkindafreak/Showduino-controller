@@ -1,19 +1,73 @@
 #include <TFT_eSPI.h>
 #include <XPT2046_Bitbang.h>
+#include "command_map.h"
+#include <Adafruit_NeoPixel.h>
+#include "FS.h"
+#include "SD.h"
+#include "SPI.h"
+
+
 
 // --- Touchscreen Pins ---
 #define MOSI_PIN 32
 #define MISO_PIN 39
-#define CLK_PIN  25
-#define CS_PIN   33
+#define CLK_PIN 25
+#define CS_PIN 33
+#define NEOPIXEL_PIN 27  // NeoPixel data pin
+#define NUM_IND 24       // Number of NeoPixels
+
+// ----------------------------
+// SD Reader pins (default VSPI pins)
+// ----------------------------
+#define SD_SCK 18
+#define SD_MISO 19
+#define SD_MOSI 23
+#define SD_CS 5
+
+
+#define GREEN_LED 16  // Turns ON at startup for confirmation
+#define BLUE_LED 17   // Blinks ON when touched //  GREEN TURNS OFF
+#define RED_LED 4     // TURNS ON when ERROR
+
+#define NEOPIXEL_PIN 27  // NeoPixel data pin
+#define NUM_IND 24       // Number of NeoPixels
+
+HardwareSerial &pc = Serial;
+HardwareSerial &megaSerial = Serial2;  // or Serial1 if you're using that instead
+
+
+
+
+String lastSystemPayload = "";
+
+
+
+Adafruit_NeoPixel WORK_IND(NUM_IND, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
+
+// ---------------   8888888888888   state stubs D.N.T.!!!      88888888888888888888888888-------------
+
+unsigned long waitForMegaTimeout = 0;
+bool megaResponded = false;
+bool timeSynced = false;
+bool bootLogged = false;
+String currentTimestamp = "[--:--:--]";
+String bootLogFileName = "/boot_unknown.txt";
+
+bool systemStatusReceived = false;  // Tracks if we got SYS:... from the Mega
+
+
+bool relayStates[8] = { false, false, false, false, false, false, false, false };
+bool sdReady = false;
+
+
 
 // --- TFT & Touchscreen Instances ---
 TFT_eSPI tft = TFT_eSPI();
 XPT2046_Bitbang touchscreen(MOSI_PIN, MISO_PIN, CLK_PIN, CS_PIN);
-
+SPIClass mySpi = SPIClass(VSPI);
 // --- Button Struct ---
 struct PillButton {
-  const char* label;
+  const char *label;
   int x, y, w, h;
   bool pressed;
   void (*onPress)();
@@ -29,37 +83,305 @@ void showDiagnosticsMenu();
 void showAddonsMenu();
 void showSettingsMenu();
 
-void wifiButtonHandler()      { Serial.println("WiFi button pressed"); showWiFiMenu(); }
-void sdCardButtonHandler()    { Serial.println("SD Card button pressed"); showSDMenu(); }
-void showMenuButtonHandler()  { Serial.println("Show Menu button pressed"); showShowMenu(); }
-void diagnosticsButtonHandler(){ Serial.println("Diagnostics button pressed"); showDiagnosticsMenu(); }
-void addonsButtonHandler()    { Serial.println("Add-ons button pressed"); showAddonsMenu(); }
-void settingsButtonHandler()  { Serial.println("Settings button pressed"); showSettingsMenu(); }
-void backToMainHandler()      { Serial.println("Back to Main Menu"); showMainMenu(); }
+void wifiButtonHandler() {
+  Serial.println("WiFi button pressed");
+  showWiFiMenu();
+}
+void sdCardButtonHandler() {
+  Serial.println("SD Card button pressed");
+  showSDMenu();
+}
+void showMenuButtonHandler() {
+  Serial.println("Show Menu button pressed");
+  showShowMenu();
+}
+void diagnosticsButtonHandler() {
+  Serial.println("Diagnostics button pressed");
+  showDiagnosticsMenu();
+}
+void addonsButtonHandler() {
+  Serial.println("Add-ons button pressed");
+  showAddonsMenu();
+}
+void settingsButtonHandler() {
+  Serial.println("Settings button pressed");
+  showSettingsMenu();
+}
+void backToMainHandler() {
+  Serial.println("Back to Main Menu");
+  showMainMenu();
+}
 
 // --- Labels & Handlers (static for pointer validity) ---
-static const char* mainLabels[6] = {"WiFi", "sd card", "show menu", "diagnostics", "add-ons", "settings"};
-static void (*mainHandlers[6])() = {wifiButtonHandler, sdCardButtonHandler, showMenuButtonHandler,
-                                    diagnosticsButtonHandler, addonsButtonHandler, settingsButtonHandler};
+static const char *mainLabels[6] = { "WiFi", "sd card", "show menu", "diagnostics", "add-ons", "settings" };
+static void (*mainHandlers[6])() = { wifiButtonHandler, sdCardButtonHandler, showMenuButtonHandler,
+                                     diagnosticsButtonHandler, addonsButtonHandler, settingsButtonHandler };
 
-static const char* wifiLabels[6] = {"AP ON", "AP OFF", "Internet", "BT ON", "BT OFF", "Back"};
-static void (*wifiHandlers[6])() = {nullptr, nullptr, nullptr, nullptr, nullptr, backToMainHandler};
+static const char *wifiLabels[6] = { "AP ON", "AP OFF", "Internet", "BT ON", "BT OFF", "Back" };
+static void (*wifiHandlers[6])() = { nullptr, nullptr, nullptr, nullptr, nullptr, backToMainHandler };
 
-static const char* sdLabels[6] = {"Back","","","","",""};
-static void (*sdHandlers[6])() = {backToMainHandler,nullptr,nullptr,nullptr,nullptr,nullptr};
+static const char *sdLabels[6] = { "Back", "", "", "", "", "" };
+static void (*sdHandlers[6])() = { backToMainHandler, nullptr, nullptr, nullptr, nullptr, nullptr };
 
-static const char* showLabels[6] = {"Back","","","","",""};
-static void (*showHandlers[6])() = {backToMainHandler,nullptr,nullptr,nullptr,nullptr,nullptr};
+static const char *showLabels[6] = { "Back", "", "", "", "", "" };
+static void (*showHandlers[6])() = { backToMainHandler, nullptr, nullptr, nullptr, nullptr, nullptr };
 
-static const char* diagLabels[6] = {"Back","","","","",""};
-static void (*diagHandlers[6])() = {backToMainHandler,nullptr,nullptr,nullptr,nullptr,nullptr};
+static const char *diagLabels[6] = { "Back", "", "", "", "", "" };
+static void (*diagHandlers[6])() = { backToMainHandler, nullptr, nullptr, nullptr, nullptr, nullptr };
 
-static const char* addonLabels[6] = {"Back","","","","",""};
-static void (*addonHandlers[6])() = {backToMainHandler,nullptr,nullptr,nullptr,nullptr,nullptr};
+static const char *addonLabels[6] = { "Back", "", "", "", "", "" };
+static void (*addonHandlers[6])() = { backToMainHandler, nullptr, nullptr, nullptr, nullptr, nullptr };
 
-static const char* settingsLabels[6] = {"Back","","","","",""};
-static void (*settingsHandlers[6])() = {backToMainHandler,nullptr,nullptr,nullptr,nullptr,nullptr};
+static const char *settingsLabels[6] = { "Back", "", "", "", "", "" };
+static void (*settingsHandlers[6])() = { backToMainHandler, nullptr, nullptr, nullptr, nullptr, nullptr };
 
+
+
+// ---------------   8888888888888   SD CARD FUNCTIONS d.n.t      88888888888888888888888888-------------
+void listDir(fs::FS &fs, const char *dirname, uint8_t levels) {
+  Serial.printf("Listing directory: %s\n", dirname);
+
+  File root = fs.open(dirname);
+  if (!root) {
+    Serial.println("Failed to open directory");
+    return;
+  }
+  if (!root.isDirectory()) {
+    Serial.println("Not a directory");
+    return;
+  }
+
+  File file = root.openNextFile();
+  while (file) {
+    if (file.isDirectory()) {
+      Serial.print("  DIR : ");
+      Serial.println(file.name());
+      if (levels) {
+        listDir(fs, file.path(), levels - 1);
+      }
+    } else {
+      Serial.print("  FILE: ");
+      Serial.print(file.name());
+      Serial.print("  SIZE: ");
+      Serial.println(file.size());
+    }
+    file = root.openNextFile();
+  }
+}
+void createDir(fs::FS &fs, const char *path) {
+  Serial.printf("Creating Dir: %s\n", path);
+  if (fs.mkdir(path)) {
+    Serial.println("Dir created");
+  } else {
+    Serial.println("mkdir failed");
+  }
+}
+void removeDir(fs::FS &fs, const char *path) {
+  Serial.printf("Removing Dir: %s\n", path);
+  if (fs.rmdir(path)) {
+    Serial.println("Dir removed");
+  } else {
+    Serial.println("rmdir failed");
+  }
+}
+void readFile(fs::FS &fs, const char *path) {
+  Serial.printf("Reading file: %s\n", path);
+
+  File file = fs.open(path);
+  if (!file) {
+    Serial.println("Failed to open file for reading");
+    return;
+  }
+
+  Serial.print("Read from file: ");
+  while (file.available()) {
+    Serial.write(file.read());
+  }
+  file.close();
+}
+void writeFile(fs::FS &fs, const char *path, const char *message) {
+  Serial.printf("Writing file: %s\n", path);
+
+  File file = fs.open(path, FILE_WRITE);
+  if (!file) {
+    Serial.println("Failed to open file for writing");
+    return;
+  }
+  if (file.print(message)) {
+    Serial.println("File written");
+  } else {
+    Serial.println("Write failed");
+  }
+  file.close();
+}
+void appendFile(fs::FS &fs, const char *path, const char *message) {
+  Serial.printf("Appending to file: %s\n", path);
+
+  File file = fs.open(path, FILE_APPEND);
+  if (!file) {
+    Serial.println("Failed to open file for appending");
+    return;
+  }
+  if (file.print(message)) {
+    Serial.println("Message appended");
+  } else {
+    Serial.println("Append failed");
+  }
+  file.close();
+}
+void renameFile(fs::FS &fs, const char *path1, const char *path2) {
+  Serial.printf("Renaming file %s to %s\n", path1, path2);
+  if (fs.rename(path1, path2)) {
+    Serial.println("File renamed");
+  } else {
+    Serial.println("Rename failed");
+  }
+}
+void deleteFile(fs::FS &fs, const char *path) {
+  Serial.printf("Deleting file: %s\n", path);
+  if (fs.remove(path)) {
+    Serial.println("File deleted");
+  } else {
+    Serial.println("Delete failed");
+  }
+}
+void testFileIO(fs::FS &fs, const char *path) {
+  File file = fs.open(path);
+  static uint8_t buf[512];
+  size_t len = 0;
+  uint32_t start = millis();
+  uint32_t end = start;
+  if (file) {
+    len = file.size();
+    size_t flen = len;
+    start = millis();
+    while (len) {
+      size_t toRead = len;
+      if (toRead > 512) {
+        toRead = 512;
+      }
+      file.read(buf, toRead);
+      len -= toRead;
+    }
+    end = millis() - start;
+    Serial.printf("%u bytes read for %u ms\n", flen, end);
+    file.close();
+  } else {
+    Serial.println("Failed to open file for reading");
+  }
+
+
+  file = fs.open(path, FILE_WRITE);
+  if (!file) {
+    Serial.println("Failed to open file for writing");
+    return;
+  }
+
+  size_t i;
+  start = millis();
+  for (i = 0; i < 2048; i++) {
+    file.write(buf, 512);
+  }
+  end = millis() - start;
+  Serial.printf("%u bytes written for %u ms\n", 2048 * 512, end);
+  file.close();
+}
+void SDCARDSETUP() {
+
+  SPIClass spi = SPIClass(VSPI);
+  if (!SD.begin(SS, spi, 80000000)) {
+    Serial.println("Card Mount Failed");
+    return;
+  }
+  uint8_t cardType = SD.cardType();
+
+
+  // Append total SD space info as a separate formatted line
+  char sdInfo[50];
+  unsigned long long totalMB = SD.totalBytes() / (1024 * 1024);
+  sprintf(sdInfo, "> Total space: %lluMB", totalMB);
+  tft.drawString(sdInfo, 10, 10 + 6 * 15);
+  delay(700);
+
+  if (cardType == CARD_NONE) {
+    Serial.println("No SD card attached");
+    sdReady = true;
+    return;
+  }
+
+  Serial.print("SD Card Type: ");
+  if (cardType == CARD_MMC) {
+    Serial.println("MMC");
+  } else if (cardType == CARD_SD) {
+    Serial.println("SDSC");
+  } else if (cardType == CARD_SDHC) {
+    Serial.println("SDHC");
+  } else {
+    Serial.println("UNKNOWN");
+  }
+
+  uint64_t cardSize = SD.cardSize() / (1024 * 1024);
+  Serial.printf("SD Card Size: %lluMB\n", cardSize);
+
+  listDir(SD, "/", 0);
+  createDir(SD, "/mydir");
+  listDir(SD, "/", 0);
+  removeDir(SD, "/mydir");
+  listDir(SD, "/", 2);
+  writeFile(SD, "/hello.txt", "Hello ");
+  appendFile(SD, "/hello.txt", "World!\n");
+  readFile(SD, "/hello.txt");
+  deleteFile(SD, "/foo.txt");
+  renameFile(SD, "/hello.txt", "/foo.txt");
+  readFile(SD, "/foo.txt");
+  testFileIO(SD, "/test.txt");
+  Serial.printf("Total space: %lluMB\n", SD.totalBytes() / (1024 * 1024));
+  Serial.printf("Used space: %lluMB\n", SD.usedBytes() / (1024 * 1024));
+}
+void logToSD(const String &message) {
+  File logFile = SD.open("/log.txt", FILE_APPEND);
+  if (logFile) {
+    logFile.println(message);
+    logFile.close();
+  } else {
+    Serial.println("ERROR: Unable to write to log.txt");
+    digitalWrite(RED_LED, HIGH);  // Visual error
+  }
+}
+void viewLogFile() {
+  File log = SD.open("/log.txt");
+  if (!log) {
+    Serial.println("Can't open log.txt");
+    return;
+  }
+
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setTextDatum(TL_DATUM);
+  int y = 10;
+  while (log.available()) {
+    String line = log.readStringUntil('\n');
+    tft.drawString(line, 5, y);
+    y += 10;
+    if (y > 230) break;
+  }
+  log.close();
+}
+void logToBootFile(const String &message) {
+  if (!sdReady) return;
+  File logFile = SD.open(bootLogFileName, FILE_APPEND);
+  if (logFile) {
+    logFile.println(currentTimestamp + " " + message);
+    logFile.close();
+  } else {
+    Serial.println("ERROR: Unable to write to boot log file");
+    digitalWrite(RED_LED, HIGH);
+  }
+}
+// ---------------   8888888888888   SD CARD FUNCTIONS d.n.t      88888888888888888888888888-------------
+
+
+// ---------------   8888888888888   MENU FUNCTIONS d.n.t      88888888888888888888888888-------------
 // --- Draw a pill button (narrow, tall) ---
 void drawPillButton(PillButton &btn, bool highlight = false) {
   uint16_t color = highlight ? tft.color565(180, 0, 0) : TFT_RED;
@@ -67,14 +389,13 @@ void drawPillButton(PillButton &btn, bool highlight = false) {
   tft.fillRoundRect(btn.x, btn.y, btn.w, btn.h, radius, color);
   tft.setTextColor(TFT_WHITE, color);
   tft.setTextDatum(MC_DATUM);
-  tft.drawString(btn.label, btn.x + btn.w/2, btn.y + btn.h/2);
+  tft.drawString(btn.label, btn.x + btn.w / 2, btn.y + btn.h / 2);
 }
-
 // --- Button Setup (narrow pill, tall, spaced for 320x240) ---
-void setupButtons(const char* labels[6], void (*handlers[6])()) {
-  int bw = 72;      // Narrow width
-  int bh = 32;      // Tall height
-  int bx = 75;      // Left margin
+void setupButtons(const char *labels[6], void (*handlers[6])()) {
+  int bw = 72;  // Narrow width
+  int bh = 32;  // Tall height
+  int bx = 75;  // Left margin
   int by = 38;
   int h_spacing = 30;
   int v_spacing = 32;
@@ -84,52 +405,119 @@ void setupButtons(const char* labels[6], void (*handlers[6])()) {
     int col = i % 2;
     int x = bx + col * (bw + h_spacing);
     int y = by + row * (bh + v_spacing);
-    buttons[i] = {labels[i], x, y, bw, bh, false, handlers[i]};
+    buttons[i] = { labels[i], x, y, bw, bh, false, handlers[i] };
     if (labels[i] && *labels[i]) drawPillButton(buttons[i]);
   }
 }
 void setupBackButton(void (*handler)()) {
-  buttons[0] = {"Back", 20, 200, 80, 30, false, handler};
+  buttons[0] = { "Back", 20, 200, 80, 30, false, handler };
   drawPillButton(buttons[0]);
   for (int i = 1; i < 6; i++) buttons[i].label = "";
 }
 
-// --- Main menu and submenus ---
+
+
+
+
+void drawRelayIndicators() {
+  // Clear the entire relay area
+  tft.fillRect(10, 35, 120, 50, TFT_BLACK);  // (x, y, w, h)
+
+  tft.setTextSize(1);  // visibility
+  tft.setTextDatum(TL_DATUM);
+
+  for (int i = 0; i < 8; i++) {
+    int col = i % 4;                    // 0 to 3
+    int row = i / 4;                    // 0 or 1
+    int x = 10 + col * 15;              // spacing across (between numbers)
+    int y = 35 + row * 15;              // line 1 or 2
+
+    tft.setTextColor(relayStates[i] ? TFT_GREEN : TFT_RED, TFT_BLACK);
+    tft.drawString(String(i + 1), x, y);
+  }
+
+  tft.setTextSize(1);  // Reset for future UI elements
+}
+
+
+void drawRightStatusColumn(String payload) {
+  // Only clear if the payload is different to avoid flickering
+  static String lastPayload = "";
+  if (payload == lastPayload) return;  // Skip redraw if nothing changed
+  lastPayload = payload;  // Save the current state
+
+  // Clear the area on the right side
+  tft.fillRect(250, 30, 70, 120, TFT_BLACK);  // Ensure the area is cleared before drawing new data
+  
+  tft.setTextDatum(TL_DATUM);
+  tft.setTextSize(1);
+  int y = 40;  // Starting y position for the first row
+
+  const char* keys[] = { "show", "system", "manual" };
+
+  for (int i = 0; i < 3; i++) {
+    String key = keys[i];
+    String value = "Error";  // Default fallback to Error if no value found
+
+    if (systemStatusReceived) {
+      int idx = payload.indexOf(key + ":");
+      if (idx != -1) {
+        int valStart = idx + key.length() + 1;
+        int valEnd = payload.indexOf(';', valStart);
+        if (valEnd == -1) valEnd = payload.length();
+        value = payload.substring(valStart, valEnd);
+        value.trim();
+        if (value.length() == 0) value = "Error";
+      }
+    }
+
+    tft.setTextColor(TFT_WHITE); // Default text color
+    tft.drawString(key, 250, y);
+    y += 20;  // Increased spacing between the key and value
+
+    // Color based on the value
+    if (value == "ok" || value == "chamber" || value == "live") {
+      tft.setTextColor(TFT_GREEN);  // OK condition
+    } else {
+      tft.setTextColor(TFT_RED);  // Error condition
+    }
+
+    tft.drawString(value, 250, y);
+    y += 50;  // Extra space between each entry
+  }
+}
+
+
+
 void showMainMenu() {
   tft.fillScreen(TFT_BLACK);
+
+  // Title - replace SHOWDUINO with current time
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setTextDatum(MC_DATUM);
-  tft.drawString("Showduino Main Menu", 160, 18);
+  tft.setTextSize(2);
+
+  // Remove brackets from [HH:MM:SS] before drawing
+  String cleanTime = currentTimestamp;
+  cleanTime.replace("[", "");
+  cleanTime.replace("]", "");
+
+  tft.drawString(cleanTime, 160, 10);  // centered time at top
+
+  tft.setTextSize(1);     // Reset text size
+  drawRelayIndicators();  // Display relay states on the left side
+
+  // Draw right-side status column dynamically based on system status
+  if (systemStatusReceived) {
+    drawRightStatusColumn(lastSystemPayload);  // Update status based on latest system info
+  } else {
+    drawRightStatusColumn("");  // Display error if no status is received
+  }
+
+  // Buttons
   setupButtons(mainLabels, mainHandlers);
-  Serial.println("Displayed: Main Menu");
- // tft.fillScreen(TFT_BLACK);
-  tft.setTextSize(1);
-  tft.setTextDatum(TL_DATUM);
-  tft.setTextColor(TFT_GREEN);
-  tft.drawString("1 2 3 4", 10, 40);
-  tft.setTextColor(TFT_RED);
-  tft.drawString("5 6 7 8", 10, 52);
-  tft.setTextColor(TFT_GREEN);
-  tft.drawString("1 2 3 4", 10, 120);
-  tft.setTextColor(TFT_RED);
-  tft.drawString("5 6 7 8", 10, 132);
-  tft.setTextColor(TFT_RED);
-  tft.drawString("0 dmx", 10, 190);
-  tft.setTextColor(TFT_WHITE);
-  tft.drawString("selected", 10, 202);
-  tft.setTextColor(TFT_WHITE);
-  tft.drawString("show", 275, 40);
-  tft.setTextColor(TFT_GREEN);
-  tft.drawString("chamber", 275, 52);
-  tft.setTextColor(TFT_WHITE);
-  tft.drawString("system", 275, 120);
-  tft.setTextColor(TFT_GREEN);
-  tft.drawString("ok", 275, 132);
-  tft.setTextColor(TFT_WHITE);
-  tft.drawString("manual", 275, 190);
-  tft.setTextColor(TFT_RED);
-  tft.drawString("live", 275, 202);
 }
+
 void showWiFiMenu() {
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_CYAN, TFT_BLACK);
@@ -138,7 +526,6 @@ void showWiFiMenu() {
   setupButtons(wifiLabels, wifiHandlers);
   Serial.println("Displayed: WiFi Menu");
 }
-
 void showSDMenu() {
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -151,7 +538,6 @@ void showSDMenu() {
   setupButtons(sdLabels, sdHandlers);
   Serial.println("Displayed: SD Card Menu");
 }
-
 void showShowMenu() {
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -164,7 +550,6 @@ void showShowMenu() {
   setupButtons(showLabels, showHandlers);
   Serial.println("Displayed: Show Menu");
 }
-
 void showDiagnosticsMenu() {
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -177,7 +562,6 @@ void showDiagnosticsMenu() {
   setupButtons(diagLabels, diagHandlers);
   Serial.println("Displayed: Diagnostics Menu");
 }
-
 void showAddonsMenu() {
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -191,6 +575,8 @@ void showAddonsMenu() {
   Serial.println("Displayed: Add-ons Menu");
 }
 
+
+
 void showSettingsMenu() {
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -200,79 +586,257 @@ void showSettingsMenu() {
   tft.drawString("- Brightness: 100%", 30, 80, 2);
   tft.drawString("- Volume A: 75%", 30, 110, 2);
   tft.drawString("- Volume B: 65%", 30, 140, 2);
+  tft.drawString("- Time: 65%", 30, 170, 2);
   setupButtons(settingsLabels, settingsHandlers);
   Serial.println("Displayed: Settings Menu");
 }
+
+
+
 
 // --- Touch Handler for XPT2046_Bitbang ---
 // Uses touch.x and touch.y directly (already screen pixels)
 void handleTouchInput() {
   TouchPoint touch = touchscreen.getTouch();
-  if (touch.zRaw != 0) {
-    int x = touch.x;
-    int y = touch.y;
-    Serial.print("Touch @ X: ");
-    Serial.print(x);
-    Serial.print(", Y: ");
-    Serial.print(y);
-    Serial.print(", Z: ");
-    Serial.println(touch.zRaw);
 
-    tft.fillCircle(x, y, 3, TFT_BLUE); // Visual feedback
-    for (int i = 0; i < 6; i++) {
-      PillButton &btn = buttons[i];
-      if (!btn.label || !*btn.label) continue;
-      bool hit = x >= btn.x && x <= (btn.x + btn.w) &&
-                 y >= btn.y && y <= (btn.y + btn.h);
-      if (hit && !btn.pressed) {
-        Serial.print("Button pressed: ");
-        Serial.println(btn.label);
-        btn.pressed = true;
-        drawPillButton(btn, true);
-        delay(150);
-        drawPillButton(btn, false);
-        btn.pressed = false;
-        if (btn.onPress) btn.onPress();
-      }
-    }
-    delay(200); // debounce
+  // 👻 Ghost touch filter
+  if (touch.zRaw < 300 || touch.x == 0 || touch.y == 0) {
+    // Uncomment for debugging ghost touches:
+    // Serial.printf("[GHOST] x:%d y:%d z:%d\n", touch.x, touch.y, touch.zRaw);
+    return;
   }
+
+  int x = touch.x;
+  int y = touch.y;
+  Serial.print("Touch @ X: ");
+  Serial.print(x);
+  Serial.print(", Y: ");
+  Serial.print(y);
+  Serial.print(", Z: ");
+  Serial.println(touch.zRaw);
+
+  tft.fillCircle(x, y, 3, TFT_BLUE);  // Visual feedback
+
+  for (int i = 0; i < 6; i++) {
+    PillButton &btn = buttons[i];
+    if (!btn.label || !*btn.label) continue;
+    bool hit = x >= btn.x && x <= (btn.x + btn.w) && y >= btn.y && y <= (btn.y + btn.h);
+    if (hit && !btn.pressed) {
+      Serial.print("Button pressed: ");
+      Serial.println(btn.label);
+      btn.pressed = true;
+      drawPillButton(btn, true);
+      delay(150);
+      drawPillButton(btn, false);
+      btn.pressed = false;
+      if (btn.onPress) btn.onPress();
+    }
+  }
+
+  delay(200);  // debounce
 }
 
 
 
 void showTerminalSplash() {
+
+  Serial.println("💣 showTerminalSplash() start");
   tft.fillScreen(TFT_BLACK);
   tft.setTextDatum(TL_DATUM);
   tft.setTextColor(TFT_GREEN);
   tft.setTextSize(1);
+
+ 
   const char *bootLines[] = {
     "> Initializing SHOWDUINO system...",
     "> Loading interface modules...",
     "> Checking relays and ports...",
-    "> Checking sd card functions...",
+    "> Checking SD card functions...",
     "> System online.",
     "> Launching control terminal..."
   };
-  for (int i = 0; i < 5; i++) {
+ Serial.println("💣 Calling SDCARDSETUP()");
+  SDCARDSETUP();
+  Serial.println("💣 SDCARDSETUP done");
+
+  for (int i = 0; i < 6; i++) {
+    Serial.printf("💣 Drawing boot line %d\n", i);
     tft.drawString(bootLines[i], 10, 10 + i * 15);
     delay(700);
   }
+  Serial.println("💣 showTerminalSplash() complete");
+  tft.setTextColor(TFT_DARKGREY);
+  tft.drawString(currentTimestamp, 200, 220);
+
 }
+
+
+
+
+void handleMegaFeedback() {
+  while (Serial2.available()) {
+    String line = Serial2.readStringUntil('\n');
+    line.trim();
+
+    // Handle RTC time data
+    if (line.startsWith("TIME:")) {
+      String raw = line.substring(5);  // e.g., "27-05-2025 17:42:09"
+      currentTimestamp = "[" + raw + "]";
+
+      // Update boot log file name based on RTC time
+      int dash1 = raw.indexOf('-');
+      int dash2 = raw.indexOf('-', dash1 + 1);
+      int space = raw.indexOf(' ');
+
+      String day = raw.substring(0, dash1);
+      String month = raw.substring(dash1 + 1, dash2);
+      String year = raw.substring(dash2 + 1, space);
+
+      bootLogFileName = "/boot_" + day + "-" + month + "-" + year + ".txt";
+
+      logToBootFile("[SYNC] RTC time updated");
+    }
+
+    // Handle system status feedback
+    if (line.startsWith("SYS:")) {
+      String payload = line.substring(4);
+      systemStatusReceived = true; // Data received from Mega
+      drawRightStatusColumn(payload);  // Update the right status column
+    }
+
+    // Handle relay feedback
+    if (line.startsWith("RELAY")) {
+      int idx = line.charAt(5) - '1';
+      bool isOn = line.endsWith("ON");
+      if (idx >= 0 && idx < 8) {
+        relayStates[idx] = isOn;
+        drawRelayIndicators();
+      }
+    }
+  }
+}
+
+
+
+
+
+
+// ---------------   8888888888888   MENU FUNCTIONS d.n.t     88888888888888888888888888-------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // --- Setup ---
 void setup() {
-  Serial.begin(115200);
+
+
+  pc.begin(115200);
+  megaSerial.begin(9600);
+  pc.println("ESP32 booting...");
+  megaSerial.println("TIME?");
+  waitForMegaTimeout = millis();  // Start countdown
+
+  megaSerial.println("SYSINFO");  // Request system info from Mega
+
+  WORK_IND.begin();
+  WORK_IND.setBrightness(170);
+  WORK_IND.setPixelColor(0, 0, 255, 0);  // Pixel update
+  WORK_IND.show();
+
+  pinMode(GREEN_LED, OUTPUT);
+  digitalWrite(GREEN_LED, HIGH);  // LED ON for confirmation
+  pinMode(BLUE_LED, OUTPUT);
+  digitalWrite(BLUE_LED, LOW);  // LED ON for confirmation
+  pinMode(RED_LED, OUTPUT);
+  digitalWrite(RED_LED, LOW);  // LED ON for confirmation
+
+
+
   tft.begin();
-  tft.setRotation(1); // portrait or landscape as desired
+  tft.setRotation(1);  // portrait or landscape as desired
   tft.fillScreen(TFT_BLACK);
   touchscreen.begin();
   showTerminalSplash();
-  
+
   Serial.println("Showduino pill button UI ready");
   showMainMenu();
+  delay(100);  // Give it a sec
+
+
+  logToBootFile("[SYNC] RTC time updated");
+  timeSynced = true;
 }
+
+
+
+
+
+
+
+
+
+
 
 // --- Main Loop ---
 void loop() {
   handleTouchInput();
+  if (!megaResponded && millis() - waitForMegaTimeout > 10000) {
+    currentTimestamp = "[NO_RTC]";
+    bootLogFileName = "/boot_fallback.txt";
+    logToBootFile("[BOOT] Mega not connected, fallback log started.");
+    timeSynced = true;
+    megaResponded = true;
+  }
+
+  if (timeSynced && !bootLogged) {
+    logToBootFile("[BOOT] Showduino touchscreen powered on.");
+    bootLogged = true;
+  }
+
+if (systemStatusReceived) {
+  // Make sure you're passing a proper string with the current status
+  drawRightStatusColumn("show:chamber;system:ok;manual:live");
+} else {
+  // If the system status isn't received, you can show a default error
+  drawRightStatusColumn("show:chamber;system:error;manual:halt");
+}
+if (!systemStatusReceived && millis() - waitForMegaTimeout > 10000) {
+  drawRightStatusColumn("show:chamber;system:error;manual:halt");  // Display an error after timeout
+}
+
+
+  // Receive from Mega
+  if (megaSerial.available()) {
+    String raw = megaSerial.readStringUntil('\n');
+    pc.println("[FROM MEGA] " + raw);
+    logToSD("[FROM MEGA] " + raw);  // ✅ Logs incoming Mega messages
+
+    if (raw.startsWith("MEGA:")) {
+      String command = raw.substring(5);
+      handleSerialCommand(command);
+      logToSD(">> Parsed CMD: " + command);  // Optional detailed log
+    }
+  }
+  // Optional: receive from Serial monitor or touchscreen
+  if (pc.available()) {
+    String raw = pc.readStringUntil('\n');
+    raw.trim();
+    if (raw.length()) {
+      megaSerial.println("ESP:" + raw);
+      logToSD("[FROM PC] " + raw);  // ✅ Logs what user sends in
+      handleSerialCommand(raw);
+    }
+  }
 }
