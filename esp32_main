@@ -1,7 +1,6 @@
 
 /* Showduino ESP32 v2.2.1 OPTIMIZED
  * Modular: SD, Scene Runner, FX Dispatcher, WiFi Handler (toggle via defines)
- * Author: Tobe & ChatGPT
  */
 
 #include <Adafruit_NeoPixel.h>
