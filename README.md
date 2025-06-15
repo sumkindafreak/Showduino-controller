@@ -1,124 +1,207 @@
-# Showduino: Immersive Show Control System
+Showduino: Immersive Show Control System
 
-**Showduino** is a powerful, Arduino-based control system designed to manage immersive horror experiences, escape rooms, and interactive installations. By combining multiple microcontrollers, Showduino delivers seamless control of lighting, audio, and environmental effects to create unforgettable experiences.
+Showduino is a modular, Arduino + ESP32-based system for controlling immersive scare attractions, escape rooms, and interactive theatrical environments. It has evolved into a professional-grade, fully customizable show controller supporting lighting, audio, fog, fire, motion triggers, and scene-based automation.
 
-## System Overview
-Showduino integrates three core components to ensure smooth performance and precise control:
-
-- **ESP32 Touchscreen Interface** – Provides a user-friendly menu for controlling brightness, settings, and system diagnostics.
-- **ESP32 Brain** – Acts as the communication hub, managing Bluetooth connectivity and relaying data between the touchscreen interface and Arduino Mega.
-- **Arduino Mega** – Handles NeoPixel lighting effects, relay triggers, and DMX control based on commands received from the ESP32 Brain.
 
 ---
 
-## Key Features
-### 1. **Touchscreen Interface**
-- Interactive touchscreen menu for intuitive control.
-- Dedicated **Brightness Control** menu with real-time adjustments.
-- Bluetooth control via serial commands to the **ESP32 Brain**.
-- Supports both text-based and icon-based UI (icons load from the SD card).
+🚦 System Architecture (Phase 4 – 2025)
 
-### 2. **ESP32 Brain**
-- Acts as the system's communication hub.
-- Manages Bluetooth connectivity for remote control.
-- Relays instructions to the **Arduino Mega** for hardware control.
+Showduino is made up of three tightly integrated modules:
 
-### 3. **Arduino Mega**
-- Controls NeoPixel displays with group-based brightness adjustment.
-- Manages relay triggers for dynamic effects.
-- Executes DMX sequences and lighting cues for immersive experiences.
+🖥️ 1. ESP32 Touchscreen Interface (CYD Panel)
 
-### 4. **Infrared Keyboard Support**
-- Utilizes a **44-button IR remote** for direct system control.
-- Includes quick access command keys for:
-  - Scene selection
-  - Menu navigation
-  - System diagnostics
-- Visual feedback via NeoPixels:
-  - **Green** for recognized inputs.
-  - **Red** for unrecognized inputs.
+2.8" touchscreen with pill-style UI
 
-### 5. **Diagnostics System**
-- Displays real-time system information directly on the touchscreen interface, including:
-  - Bluetooth status
-  - WiFi connection details
-  - NeoPixel brightness settings
-  - Relay and input status
-  - SD card presence
-  - Power supply readings
-  - Temperature sensor data
-  - I/O check results
-- Manual **System Test Mode** with **PASS/FAIL** indicators for easy troubleshooting.
+SD card-based icon menus
 
-### 6. **Future Expansion Plans**
-Showduino is designed for scalability, with several planned upgrades:
-- Enhanced audio support with minimal memory impact.
-- Expanded touchscreen animations, effects, and transitions.
-- WiFi remote control functionality.
-- OTA (Over-The-Air) updates for remote code deployment.
-- Puzzle integration for escape room setups.
+Real-time diagnostics, clock sync, and status indicators
+
+Touchscreen + IR remote navigation
+
+Controls and displays:
+
+WiFi + Bluetooth status
+
+SD card presence
+
+NeoPixel + Relay activity
+
+System voltage, temperature, diagnostics
+
+Log file creation with [DATE TIME] stamps
+
+
+
+🧠 2. ESP32 Brain (Web Controller & Scene Host)
+
+Hosts the GoreFX Dashboard: A local offline-first PWA
+
+Receives commands from the touchscreen and web clients
+
+Parses .shdo scene files and dispatches FX
+
+Provides HTTP + WebSocket API
+
+Supports SD-based file serving, OTA updates, and serial passthrough to Mega
+
+Acts as bridge for timeline sequences and live FX control
+
+
+🔧 3. Arduino Mega (Relay, Pixel, DMX Master)
+
+Controls:
+
+8+ Relays (5V/12V split)
+
+4 NeoPixel lines with segmented FX
+
+Dual MP3 players (YX5300)
+
+DMX effects via Conceptinetics library
+
+SX1509 input expander (scene buttons 0–9)
+
+RTC time sync with ESP
+
+Diagnostics (5V, 3.3V, 12V, standby, temperature)
+
+
+Command-based FX execution (e.g., FX_001:START:20:COLOR:SPEED:BRIGHT)
+
+Modular pixel_control.h, relay_control.h, diagnostics_control.h headers
+
+
 
 ---
 
-## Hardware Components
-- **ESP32 Touchscreen Display** (for user interface)
-- **ESP32 WROOM-32** (as the Brain)
-- **Arduino Mega** (for hardware control)
-- **SX1509 I/O Expanders** (for additional inputs)
-- **MP3 Players** (for audio effects)
-- **NeoPixel Strips & Jewels** (for dynamic lighting)
-- **Relay Modules** (for triggered effects)
-- **SD Card Module** (for icon storage)
-- **RTC Module** (for time-based triggers)
-- **ACS712 Current Sensor** (for power monitoring)
+🧰 Key Features
+
+🎛️ Modular Control Interface
+
+All FX, relays, MP3s, and system commands handled via serial/WebSocket commands
+
+Supports static + parametric commands with JSON parsing
+
+Scene playback via .shdo files with timestamped FX blocks
+
+
+🎨 Live FX Dashboard (GoreFX)
+
+Visual editor with drag-and-drop timeline
+
+MP3 drag support
+
+Scene export/import (.shdo)
+
+Live test triggers and FX sandbox
+
+Scene library with save/delete/duplicate
+
+
+🔍 Advanced Diagnostics
+
+Power monitoring via ACS712
+
+SD card logs per boot
+
+Real-time sensor values and status columns
+
+System fallback handling (e.g., no Mega detected)
+
+
+📦 Offline-First App Hosting
+
+ESP32 hosts all assets (HTML/CSS/JS) from SD
+
+Instant connection via local AP + fallback
+
+No cloud dependency for operation
+
+
 
 ---
 
-## Communication Flow
-Showduino's control structure ensures precise data management and hardware interaction:
+🔩 Hardware Inventory (v4.0)
 
-1. **ESP32 Touchscreen Interface** handles all UI interactions, sending serial commands to the **ESP32 Brain** via UART.
-2. The **ESP32 Brain** interprets these commands and relays relevant instructions to the **Arduino Mega**.
-3. The **Arduino Mega** executes lighting effects, relay control, and DMX sequences based on incoming data.
+Component	Role
 
-This modular system design allows for future enhancements, expanded functionality, and flexible integration into immersive experiences.
+ESP32 Touch (CYD)	UI, menus, SD logging
+ESP32 WROOM-32	App server, command parser
+Arduino Mega	Hardware relay/pixel/MP3/DMX control
+2x YX5300 MP3 Players	Audio playback via Mega serial
+4x NeoPixel lines	FX props (Time Circuits, Candles, etc.)
+8x Relays	Fog, fire, motion, etc.
+RTC Module	Timekeeping + sync
+SX1509	10x scene input buttons
+SD Card Module	App & config storage
+ACS712	Voltage/power monitoring
 
 
-
-------------------------------------------
-# Bluetooth-Controlled Haunted Lantern
-
-The **Bluetooth-Controlled Haunted Lantern** is a Showduino add-on designed to deliver haunting lighting effects for your immersive horror experiences. This compact and dynamic lighting solution enhances your setups with chilling visuals and wireless control.
-
----
-
-## Hardware Setup
-- **Microcontroller:** ESP32 (With built-in Bluetooth)
-- **NeoPixels:** 7-pixel NeoPixel Jewel for dynamic lighting effects
-- **Power Supply:** Suitable for both the ESP32 and NeoPixel Jewel
-- **Enclosure:** Designed to resemble a traditional lantern for added realism in haunted setups.
-- **Mounting Options:** Includes attachment points for wall mounting, ceiling hanging, or portable use.
 
 ---
 
-## Functionality
-✅ **Bluetooth Control:** Utilizes the ESP32’s built-in Bluetooth for wireless control.  
-✅ **Lighting Effects:** Customizable lighting effects like flickering flames, eerie glows, and pulsing patterns.  
-✅ **Wireless Operation:** Commands are sent via Bluetooth for seamless control.  
-✅ **Compact Design:** Designed to be portable and easy to integrate into your horror setups.  
-✅ **Thematic Effects:** Pre-programmed horror-themed lighting effects, including:  
-   - **Pulsing Red Glow** for simulating beating hearts or sinister warnings.  
-   - **Flickering Yellow Flame** for realistic candle or lantern flickers.  
-   - **Ghostly Blue Aura** for ethereal or spectral appearances.  
-✅ **Dynamic Brightness Control:** Adjustable brightness to match different scare intensities.  
-✅ **Sound-Activated Effects:** Optional microphone integration to trigger flickering patterns based on sudden noises or screams.  
+🔮 Future Roadmap
+
+🔁 .shdo file editor on touchscreen
+
+📲 Scene sync with Firebase/ScareSync
+
+🧠 AI FX suggestions + scene generator
+
+📡 RF/Mesh support for remote props
+
+🔉 Live microphone response FX (jumpscares!)
+
+🔐 Command encryption & scene locking
+
+
 
 ---
 
-## Planned Enhancements
-- Advanced lighting patterns for dynamic ambiance.  
-- Potential interactive triggers for deeper immersion.  
-- Integration with motion sensors for automatic activation in response to movement.  
-- Multi-lantern synchronization for coordinated lighting effects across multiple units.  
-- Battery-powered option for increased portability in outdoor or remote locations.  
+🔦 Bluetooth-Controlled Haunted Lantern
+
+A self-contained FX add-on for Showduino, this ESP32-powered lantern delivers wireless, reactive lighting for horror sets and portable scares.
+
+🛠️ Hardware
+
+ESP32 (Bluetooth + WiFi)
+
+7-pixel NeoPixel Jewel
+
+5V or LiPo power
+
+Optional mic module (MAX9814)
+
+3D-printed lantern enclosure with mounting points
+
+
+⚙️ Features
+
+🔵 Ghostly Blue, 🔥 Candle Flicker, 💓 Red Pulse FX
+
+🎚️ Adjustable brightness, flicker speed
+
+🎤 Sound-activated flicker (jump response)
+
+🔌 Bluetooth or UDP control
+
+🔋 Battery-ready design for roaming actors
+
+
+📈 Planned Upgrades
+
+Scene sync with GoreFX timeline
+
+Group FX sync with other lanterns
+
+Motion-triggered effects (PIR)
+
+Offline FX looping fallback
+
+
+
+---
+
+For support, documentation, or to join the hauntSync™ creator network, visit show-duino.com
 
