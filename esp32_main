@@ -1,134 +1,353 @@
-#include <Arduino.h>
-#include <BluetoothSerial.h>
-#include "esp_bt_main.h"
-#include "esp_bt_device.h"
-#include "esp_gap_bt_api.h"
 
-// UART Communication Pins
-#define RX_PIN 3
-#define TX_PIN 1
-#define MEGA_RX_PIN 16
-#define MEGA_TX_PIN 17
-#define MP3_1_RX_PIN 18
-#define MP3_1_TX_PIN 19
-#define MP3_2_RX_PIN 21
-#define MP3_2_TX_PIN 22
+/* Showduino ESP32 v2.2.1 OPTIMIZED
+ * Modular: SD, Scene Runner, FX Dispatcher, WiFi Handler (toggle via defines)
+ * Author: Tobe & ChatGPT
+ */
 
-// Bluetooth Setup
-BluetoothSerial SerialBT;
-bool bluetoothEnabled = false;
-bool bluetoothScanning = false;
+#include <Adafruit_NeoPixel.h>
+#include "custom_matrix_fx.h"
+#include "FS.h"
+#include "SD.h"
+#include "SPI.h"
+#include <TFT_eSPI.h>
+#include <XPT2046_Bitbang.h>
 
-#define touchscreen Serial2
-#define mega Serial1
-HardwareSerial mp3Player1(1); // MP3 Player 1
-HardwareSerial mp3Player2(2); // MP3 Player 2
+#define USE_SD
+#define USE_SCENE_RUNNER
+#define USE_WIFI_HANDLER
 
-// YX5300 MP3 Command Structure
-void sendMP3Command(HardwareSerial &mp3Player, uint8_t command, uint8_t param1, uint8_t param2) {
-    uint8_t buffer[8] = {0x7E, 0xFF, 0x06, command, 0x00, param1, param2, 0xEF};
-    mp3Player.write(buffer, 8);
+// ==================== PIN DEFINITIONS ====================
+#define XPT2046_IRQ 36
+#define XPT2046_MOSI 32
+#define XPT2046_MISO 39
+#define XPT2046_CLK 25
+#define XPT2046_CS 33
+
+
+
+
+
+#define MEGA_RX 3
+#define MEGA_TX 1
+#define CYD_LED_BLUE 17
+#define CYD_LED_RED 4
+#define CYD_LED_GREEN 16
+#define BACKLIGHT_PIN 21
+
+
+#define SD_SCK 18
+#define SD_MISO 19
+#define SD_MOSI 23
+#define SD_CS 5
+
+
+#define MAX_SCENE_ACTIONS 75  // Reduced from 100 for RAM savings
+
+
+// ==================== OBJECTS INITIALIZATION ====================
+TFT_eSPI tft = TFT_eSPI();
+XPT2046_Bitbang touchscreen(XPT2046_MOSI, XPT2046_MISO, XPT2046_CLK, XPT2046_CS);
+
+
+
+Adafruit_NeoPixel logoStrip(18, 22, NEO_GRB + NEO_KHZ800);
+HardwareSerial SerialFromMega(2);
+//SPIClass spi = SPIClass(VSPI);
+int tonePin = 26;
+int currentBrightness = 128;
+uint8_t shimmerFrame = 0;
+
+unsigned long lastInteractionTime = 0;
+const unsigned long backlightTimeout = 30000;
+
+#ifdef USE_SCENE_RUNNER
+struct SceneAction {
+  unsigned long triggerTime;
+  uint8_t fxID;
+  uint16_t start;
+  uint16_t count;
+  uint32_t color;
+  uint8_t speed;
+  uint8_t brightness;
+};
+
+SceneAction sceneQueue[MAX_SCENE_ACTIONS];
+int sceneLength = 0;
+unsigned long sceneStartTime = 0;
+void loadShdoScene(const char *path);
+void runSceneFrame(Adafruit_NeoPixel &strip);
+#endif
+
+int currentPage = 0;
+
+
+void checkBacklightTimeout() {
+  if (millis() - lastInteractionTime > backlightTimeout) {
+    digitalWrite(BACKLIGHT_PIN, LOW);
+      shimmerWaveFX(shimmerFrame);
+      shimmerFrame += 2;
+      delay(30);
+  }
 }
 
-void handleBluetoothCommand(String command) {
-    touchscreen.print("Unhandled Bluetooth Command: ");
-    touchscreen.println(command);
+
+// ==============================
+// Draw the "Back" button (bottom right)
+// ==============================
+void drawBackButton() {
+  // Draw a filled and outlined rounded rectangle for button
+  tft.fillRoundRect(240, 200, 70, 25, 5, TFT_DARKGREY);
+  tft.drawRoundRect(240, 200, 70, 25, 5, TFT_LIGHTGREY);
+
+  // Button label "<< BACK"
+  tft.setCursor(250, 208);  // Centered within button
+  tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+  tft.setTextSize(1);
+  tft.print("<< BACK");
 }
 
-void startBluetoothScan() {
-    touchscreen.println("BT_SCANNING_STARTED");
-    esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 10, 0); // Scan for 10 seconds
-}
 
-void pairBluetoothDevice(String deviceName) {
-    touchscreen.print("ATTEMPTING_PAIRING_WITH: ");
-    touchscreen.println(deviceName);
-    touchscreen.println("PAIRING_SUCCESSFUL");
-}
+void handleTouchInput(int x, int y) {
+  digitalWrite(BACKLIGHT_PIN, HIGH);
+  lastInteractionTime = millis();
 
-// Device Discovery Callback
-void btScanCallback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param) {
-    if (event == ESP_BT_GAP_DISC_RES_EVT) {
-        char bda_str[18];
-        snprintf(bda_str, sizeof(bda_str), "%02x:%02x:%02x:%02x:%02x:%02x",
-                 param->disc_res.bda[0], param->disc_res.bda[1], param->disc_res.bda[2],
-                 param->disc_res.bda[3], param->disc_res.bda[4], param->disc_res.bda[5]);
+  // Sidebar selection
+  if (x < 100 && y > 30) {
+    int selected = (y - 30) / 40;
+    if (selected != currentPage && selected >= 0 && selected <= 4) {
+      currentPage = selected;
+      tft.fillRect(100, 30, 220, 210, TFT_BLACK);
 
-        touchscreen.print("FOUND_DEVICE: ");
-        touchscreen.println(bda_str);
-    } else if (event == ESP_BT_GAP_DISC_STATE_CHANGED_EVT && param->disc_st_chg.state == ESP_BT_GAP_DISCOVERY_STOPPED) {
-        touchscreen.println("BT_SCAN_COMPLETE");
+      switch (selected) {
+       // case 0: drawMemoPage(); break;
+       // case 1: drawAlienPornPage(); break;
+       // case 2: drawVitalsPage(); break;
+       // case 3: drawCorePage(); break;
+      //  case 4: drawSchematicsPage(); break;
+      }
+
+      drawBackButton();
     }
+  }
 }
+
+
+
+void runBootSequence() {
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.setCursor(10, 20);
+  tft.setTextSize(1);
+  tft.println("Initializing Engineering Terminal...");
+  delay(500);
+
+  const char* bootLines[] = {
+    ">> Bootloader v1.3 loaded",
+    ">> Establishing neural uplink...",
+    ">> Verifying system integrity...",
+    ">> Syncing with core reactor...",
+    ">> Enabling user interface...",
+    ">> Launching display renderer...",
+    ">> Boot complete."
+  };
+
+  for (int i = 0; i < 7; i++) {
+    tft.println(bootLines[i]);
+    drawBootSpinner(i);
+    delay(400);
+  }
+
+  delay(600);
+}
+
+void drawBootSpinner(int pos) {
+ const char spinner[4] = {'|', '/', '-', '\\'};
+  tft.setCursor(290, 220);
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft.print(spinner[pos % 4]);
+}
+
+void fadeToDashboard() {
+  for (int b = 0; b < 255; b += 8) {
+    tft.fillScreen(tft.color565(b, b, b));
+    delay(15);
+  }
+  tft.fillScreen(TFT_BLACK);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 void setup() {
-    Serial.begin(115200);           // Main serial for debugging
-    touchscreen.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);  // UART to touchscreen ESP32
-    mega.begin(9600, SERIAL_8N1, MEGA_RX_PIN, MEGA_TX_PIN); // UART to Arduino Mega
-    mp3Player1.begin(9600, SERIAL_8N1, MP3_1_RX_PIN, MP3_1_TX_PIN); // MP3 Player 1
-    mp3Player2.begin(9600, SERIAL_8N1, MP3_2_RX_PIN, MP3_2_TX_PIN); // MP3 Player 2
+  Serial.begin(115200);
+  SerialFromMega.begin(115200, SERIAL_8N1, MEGA_RX, MEGA_TX);
+  delay(1000);
 
-    // Bluetooth Setup
-    SerialBT.begin("ESP32_Brain");
-    bluetoothEnabled = true;
+  logoStrip.begin();
+  logoStrip.setBrightness(100);
+  logoStrip.show();
 
-    // Initialize Bluetooth GAP for scanning
-    esp_bluedroid_init();
-    esp_bluedroid_enable();
-    esp_bt_gap_register_callback(btScanCallback);
+
+    // Initialize TFT display
+  tft.init();
+  tft.setRotation(1);
+  tft.fillScreen(TFT_BLACK);
+  
+  // Initialize touchscreen
+  touchscreen.begin();
+  pinMode(BACKLIGHT_PIN, OUTPUT);
+  fadeToDashboard();
+  analogWrite(BACKLIGHT_PIN, currentBrightness);
+
+
+
+  // Initialize status LEDs
+  pinMode(CYD_LED_BLUE, OUTPUT);
+  pinMode(CYD_LED_RED, OUTPUT);
+  pinMode(CYD_LED_GREEN, OUTPUT);
+
+
+  digitalWrite(CYD_LED_GREEN, HIGH);
+  digitalWrite(CYD_LED_RED, HIGH);
+  digitalWrite(CYD_LED_BLUE, LOW);
+
+
+
+#ifdef USE_SD
+  if (!SD.begin(SD_CS)) {  // Don't pass custom spi, TFT_eSPI already sets it up
+    Serial.println(F("[ESP] SD Mount Failed"));
+  } else {
+    Serial.println(F("[ESP] SD Mounted"));
+    if (!SD.exists("/scenes")) SD.mkdir("/scenes");
+  }
+#endif
+
+
+#ifdef USE_SCENE_RUNNER
+  loadShdoScene("/scenes/test_scene.shdo");
+#endif
+
+  Serial.println(F("[ESP] Ready"));
+  SerialFromMega.println("@MEGA: ESP booted");
+
+  for (int i = 0; i < 18; i++) logoStrip.setPixelColor(i, logoStrip.Color(255, 255, 0));
+  logoStrip.show();
+
+Serial.print("Free Heap: ");
+Serial.println(heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
 }
+
+
+
+
+
+
+
+
+
 
 void loop() {
-    // Bluetooth Command Handling
-    if (SerialBT.available()) {
-        String command = SerialBT.readString();
-        handleBluetoothCommand(command);
-    }
 
-    // UART Command Handling from Touchscreen ESP32
-    if (touchscreen.available()) {
-        String incomingData = touchscreen.readString();
-        handleUARTCommand(incomingData);
-    }
 
-    // UART Command Handling from Arduino Mega
-    if (mega.available()) {
-        String incomingData = mega.readString();
-        handleMegaCommand(incomingData); // New function for Mega data processing
-    }
+  checkBacklightTimeout();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#ifdef USE_SCENE_RUNNER
+  runSceneFrame(logoStrip);
+#endif
+
+  if (SerialFromMega.available()) {
+    String msg = SerialFromMega.readStringUntil('\n');
+    Serial.println("[ESP] Mega says: " + msg);
+    if (msg == "CMD:REBOOT") ESP.restart();
+  }
+
+  if (Serial.available()) {
+    String msg = Serial.readStringUntil('\n');
+    SerialFromMega.println("@MEGA: " + msg);
+  }
 }
 
-// Handles UART Commands from Touchscreen ESP32
-void handleUARTCommand(String command) {
-    command.trim();
-
-    if (command == "SCAN_BLUETOOTH") {
-        startBluetoothScan();
-    } else if (command.startsWith("PAIR_BLUETOOTH_")) {
-        String deviceName = command.substring(15);
-        pairBluetoothDevice(deviceName);
-    }
-
-    else if (command.startsWith("LANTERN_")) {
-        SerialBT.println(command); // Forward lantern commands via Bluetooth
-    }
-
-    else {
-        mega.println(command); // Forward all other commands directly to Mega
-    }
-
-    // Feedback to touchscreen ESP32
-    touchscreen.print("COMMAND_RECEIVED: ");
-    touchscreen.println(command);
+#ifdef USE_SCENE_RUNNER
+void loadShdoScene(const char *path) {
+  File sceneFile = SD.open(path);
+  if (!sceneFile) return;
+  sceneLength = 0;
+  while (sceneFile.available() && sceneLength < MAX_SCENE_ACTIONS) {
+    String line = sceneFile.readStringUntil('\n');
+    line.trim();
+    if (line.startsWith("#") || line.length() < 5) continue;
+    SceneAction action;
+    int idx = line.indexOf(':');
+    if (idx < 0) continue;
+    action.triggerTime = line.substring(0, idx).toInt();
+    String params = line.substring(idx + 1);
+    params.replace(" ", "");
+    sscanf(params.c_str(), "FX=%hhuSTART=%huCOUNT=%huCOLOR=%hhu,%hhu,%hhuSPEED=%hhuBRIGHT=%hhu",
+           &action.fxID, &action.start, &action.count,
+           &((uint8_t *)&action.color)[1],
+           &((uint8_t *)&action.color)[2],
+           &((uint8_t *)&action.color)[3],
+           &action.speed, &action.brightness);
+    ((uint8_t *)&action.color)[0] = 0;
+    sceneQueue[sceneLength++] = action;
+  }
+  sceneFile.close();
+  sceneStartTime = millis();
 }
 
-// Handles Commands from the Mega to ESP32 Brain
-void handleMegaCommand(String command) {
-    command.trim();
-
-    if (command.startsWith("LANTERN_")) {
-        SerialBT.println(command); // Forward lantern commands via Bluetooth
-    } else {
-        touchscreen.println("UNKNOWN_MEGA_COMMAND");
+void runSceneFrame(Adafruit_NeoPixel &strip) {
+  unsigned long now = millis() - sceneStartTime;
+  for (int i = 0; i < sceneLength; i++) {
+    SceneAction &a = sceneQueue[i];
+    if (a.triggerTime != 0 && now >= a.triggerTime) {
+      Serial.printf("[FX %d at %lu]\n", a.fxID, now);
+      dispatchFX(a.fxID, strip, a.start, a.count, a.color, a.speed, a.brightness);
+      a.triggerTime = 0;
     }
+  }
 }
+#endif
+
+void dispatchFX(uint8_t fxID, Adafruit_NeoPixel &strip, uint16_t start, uint16_t count, uint32_t color, uint8_t speed, uint8_t brightness) {
+  char fxStr[8];
+  sprintf(fxStr, "FX_%03d", fxID);
+  String cmd = String(fxStr) +
+               ":START=" + String(start) +
+               ";COUNT=" + String(count) +
+               ";COLOR=" + String((uint8_t)(color >> 16)) + "," +
+                               String((uint8_t)(color >> 8)) + "," +
+                               String((uint8_t)(color)) +
+               ";SPEED=" + String(speed) +
+               ";BRIGHT=" + String(brightness);
+  SerialFromMega.println(cmd);
+}
+
+
+
