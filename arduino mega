@@ -1,1205 +1,224 @@
-#include <Wire.h>                  // <-- Must come first
-#include <Adafruit_NeoPixel.h>
-#include <CuteBuzzerSounds.h>
+#include <Wire.h>
 #include <SparkFunSX1509.h>
+#include <Arduino.h>
+#include <Adafruit_NeoPixel.h>
+#include "Adafruit-NECremote44.h"
 #include <RTClib.h>
-#include <DmxSimple.h>
-
-RTC_DS1307 rtc;  // clock
-SX1509 io;  // SX1509 instance
-
-#define DMX_DE_PIN 2      // RS485 Driver Enable (DE) pin on MKR 485 Shield
-#define DMX_CHANNEL 1     // Fixture DMX Address 1 (Smoke Machine Control)
-unsigned long smokeStartTime = 0;
-bool smokeActive = false;
+#include <DHT.h>
+#include <CuteBuzzerSounds.h>
+#include "custom_neopixel_fx.h"
 
 
-// Pin Assignments
-#define PWR_OK_PIN A4       // Gray wire (Power Good Signal)
-#define VOLTAGE_12V A5     // Yellow wire (12V) - DISABLED UNTIL SENSOR ARRIVES
-#define VOLTAGE_5V A1      // Red wire (5V) - Direct Connection
-#define VOLTAGE_3V3 A2     // Orange wire (3.3V) - Direct Connection
-#define STANDBY_POWER A3   // Purple wire (5VSB - Standby Power)
+#define PIXEL_COUNT 24
+#define NUM_RELAYS 8
+#define NUM_PIXEL_LINES 4
 
-// Voltage Conversion Multiplier for 12V Sensor (DISABLED UNTIL SENSOR ARRIVES)
-float voltageMultiplier = 5.0 * (25.0 / 5.0) / 1023.0;
+// Pin Assignments for diagnostics
 
+#define PWR_OK_PIN A4     // Gray wire (Power Good Signal)
+#define VOLTAGE_12V A5    // Yellow wire (12V) - DISABLED UNTIL SENSOR ARRIVES
+#define VOLTAGE_5V A1     // Red wire (5V) - Direct Connection
+#define VOLTAGE_3V3 A2    // Orange wire (3.3V) - Direct Connection
+#define STANDBY_POWER A3  // Purple wire (5VSB - Standby Power)
 
-#define BUZZER_PIN 48
+#define BUZZER_PIN 47
 
-#define RELAY1_PIN 5
-#define RELAY2_PIN 6
-#define RELAY3_PIN 7
-#define RELAY4_PIN 8
-#define RELAY5_PIN 9
-#define RELAY6_PIN 10
-#define RELAY7_PIN 11
-#define RELAY8_PIN 12
+RTC_DS1307 rtc;
 
 
+// ===== Voltage Thresholds =====
+const float THRESHOLD_5V = 4.7;
+const float THRESHOLD_3V3 = 3.1;
+const float THRESHOLD_5VSB = 4.7;
+const float THRESHOLD_PWR_OK = 4.5;
+const float THRESHOLD_12V = 11.5;
+float voltageMultiplier = 5.0 * (25.0 / 5.0) / 1023.0;  // Already correct for the module
 
-#define ESP32_MAIN Serial1      // For talking to ESP32 MAIN
-#define DEBUG       Serial    // For serial monitor/PC debugging
+#define DHTPIN 48      // DHT11 data pin
+#define DHTTYPE DHT11  // Sensor type
 
-
-// States and flags
-
-bool emergencyStopActive = false;
-bool startPressed = false;
-
-// Scenes and flags
-
-bool sceneActive = false;
-bool scene1Active = false;
-bool scene2Active = false;
-bool scene3Active = false;
-bool scene4Active = false;
-bool scene5Active = false;
-bool scene6Active = false;
-bool scene7Active = false;
-bool scene8Active = false;
-bool scene9Active = false;
-bool scene10Active = false;
-
-bool lastButtonState1 = HIGH;  // Previous state of ONESHOT1
-bool lastButtonState2 = HIGH;  // Previous state of ONESHOT2
-bool lastButtonState3 = HIGH;  // Previous state of ONESHOT3
-bool lastButtonState4 = HIGH;  // Previous state of ONESHOT4
-
-bool shot1State = HIGH;  // Current state of ONESHOT1
-bool shot2State = HIGH;  // Current state of ONESHOT2
-bool shot3State = HIGH;  // Current state of ONESHOT3
-bool shot4State = HIGH;  // Current state of ONESHOT4
+DHT dht(DHTPIN, DHTTYPE);
+unsigned long lastDHTLog = 0;
+const unsigned long DHT_INTERVAL = 20000;  // 40 seconds
 
 
-// machine/scene-states
-bool idle = false;
-bool travelling = false;
-bool glitching = false;
-bool isShocking = false;
-bool isFading = true;  // Tracks if the console is fading
-
-// Define the relay pins in an array
-const int RELAY_PINS[] = { RELAY1_PIN, RELAY2_PIN, RELAY3_PIN, RELAY4_PIN, RELAY5_PIN, RELAY6_PIN, RELAY7_PIN, RELAY8_PIN };
-const int NUM_RELAYS = sizeof(RELAY_PINS) / sizeof(RELAY_PINS[0]);
-
-// Pin definitions for NeoPixel
-#define PIN 32
-#define NUMmachine 100
-Adafruit_NeoPixel machine(NUMmachine, PIN, NEO_GRB + NEO_KHZ800);
-
-#define NUMBERS 33
-#define DISP 100
-Adafruit_NeoPixel time_display(DISP, NUMBERS, NEO_GRB + NEO_KHZ800);
-
-#define CAN 34
-#define NUM_CANDLES 3
-#define NUM_PIXELS_PER_CANDLE 3
-#define NUM_PIXELS (NUM_CANDLES * NUM_PIXELS_PER_CANDLE)
-Adafruit_NeoPixel pixels(NUM_PIXELS, CAN, NEO_GRB + NEO_KHZ800);
-
-// Definitions for the additional independent LEDs
-#define NUM_EXTRA_PIXELS 6  // Number of independent extra pixels
-Adafruit_NeoPixel spotlights(NUM_EXTRA_PIXELS, CAN, NEO_GRB + NEO_KHZ800);
 
 
-// Which pin on the Arduino is connected to the time circuits?
-#define circuits 35
-// How many Neomachine are attached to the Arduino?
-#define circ 100  // Popular NeoPixel ring size
-Adafruit_NeoPixel time_circuits(circ, circuits, NEO_GRB + NEO_KHZ800);
+
+const int START_BTN_PIN = 6;
+const int RESET_BTN_PIN = 7;
+const int STOP_BTN_PIN = 8;
+
+bool lastStartState = HIGH;
+bool lastResetState = HIGH;
+bool lastStopState = HIGH;
+
+const unsigned long btnDebounce = 50;
+unsigned long lastBtnTime = 0;
+
+SX1509 io;
+#define SX_ADDR 0x3E
+// Remap SX1509 pin index [0–9] to the actual scene button number
+const byte sxSceneButtons[16] = {
+  0,   // Pin 0 → Button 0
+  7,   // Pin 1 → Button 1
+  8,   // Pin 2 → Button 2
+  9,   // Pin 3 → Button 3
+  4,   // Pin 4 → Button 4
+  5,   // Pin 5 → Button 5
+  6,   // Pin 6 → Button 6
+  1,   // Pin 7 → Button 7
+  2,   // Pin 8 → Button 8
+  3,   // Pin 9 → Button 9
+  10,  // Pin 10 → input 10
+  11,  // Pin 11 → input 11
+  12,  // Pin 12 → input 12
+  13,  // Pin 13 → input 13
+  14,  // Pin 14 → input 14
+  15,  // Pin 15 → input 15
+};
 
 
-// Timers
-unsigned long previousMillis = 0;
-unsigned long startMillis = 0;
-unsigned long lastDebounceTime = 0;
-const unsigned long debounceDelay = 50;  // Debounce delay in milliseconds
-const long intervalpsu = 1000;           // Update every 1000ms (1 second)
-
-unsigned long interval = random(50, 200);  // Random interval between updates
-int twinkle = random(100, 2000);           // Change the flash speed randomly
-int fliker = random(600, 1200);            // Change the flash speed randomly
-int timefliker = 15;
-int electric = random(600, 1200);  // Change the flash speed randomly
-const long fade_time = 4000;       //console fade in time  //  needs to be length of boot up track
-int flickerSpeed = 800;            // Speed of the flicker in milliseconds
-const long blink_interval = 500;   // Blink interval in milliseconds
+const int numSceneButtons = sizeof(sxSceneButtons) / sizeof(sxSceneButtons[0]);
+bool sxPrevState[16] = { HIGH };  // Fills all to HIGH
 
 
-// Call this once in setup()
-void setupSX1509() {
-  if (!io.begin()) {
-   ESP32_MAIN.println("SX1509 not found!");
-  } else {
-   ESP32_MAIN.println("SX1509 connected!");
-    // Set SX1509 pins 0-13 as inputs with internal pull-ups
-    for (int i = 0; i <= 13; i++) {
-      io.pinMode(i, INPUT_PULLUP);
+// --- NeoPixels (D22–D25)
+const int pixelPins[NUM_PIXEL_LINES] = { 22, 23, 24, 25 };
+Adafruit_NeoPixel pixels[NUM_PIXEL_LINES] = {
+  Adafruit_NeoPixel(PIXEL_COUNT, 22, NEO_GRB + NEO_KHZ800),
+  Adafruit_NeoPixel(PIXEL_COUNT, 23, NEO_GRB + NEO_KHZ800),
+  Adafruit_NeoPixel(PIXEL_COUNT, 24, NEO_GRB + NEO_KHZ800),
+  Adafruit_NeoPixel(PIXEL_COUNT, 25, NEO_GRB + NEO_KHZ800)
+};
+
+// --- Relays (D26–D33)
+const int relayPins[NUM_RELAYS] = { 26, 27, 28, 29, 30, 31, 32, 33 };
+bool relayStates[NUM_RELAYS];
+
+bool relayUseTimer[NUM_RELAYS] = { false, false, false, false, false, false, false, false };
+unsigned long relayTimers[NUM_RELAYS] = { 0 };
+const unsigned long relayDuration = 3000;  // 3 seconds
+
+
+#define NUM_BUTTONS 12  // Previously 8
+
+
+const int buttonPins[NUM_BUTTONS] = {
+  40, 41, 42, 43, 44, 45, 34, 35,  // Buttons 0–7 → Relays 1–7
+  36, 37, 38, 39                   // Buttons 8–11 → A, B, C, Relay 8
+};
+
+bool buttonStates[NUM_BUTTONS] = { HIGH };  // Auto fills all HIGHs
+unsigned long lastDebounceTime[NUM_BUTTONS] = { 0 };
+const unsigned long debounceDelay = 50;
+
+// --- IR Remote on Pin 46
+const byte irPin = 46;
+Adafruit_NECremote remote(irPin);
+
+// Hex codes for IR buttons
+const byte buttonCode[44] = {
+  0x5C, 0x5D, 0x41, 0x40, 0x58, 0x59, 0x45, 0x44,
+  0x54, 0x55, 0x49, 0x48, 0x50, 0x51, 0x4D, 0x4C,
+  0x1C, 0x1D, 0x1E, 0x1F, 0x18, 0x19, 0x1A, 0x1B,
+  0x14, 0x15, 0x16, 0x17, 0x10, 0x11, 0x12, 0x13,
+  0x0C, 0x0D, 0x0E, 0x0F, 0x08, 0x09, 0x0A, 0x0B,
+  0x04, 0x05, 0x06, 0x07
+};
+
+// Readable labels for each button
+const char* irLabels[44] = {
+  "1", "2", "3", "4",
+  "5", "6", "7", "8",
+  "9", "0", "*", "#",
+  "A", "B", "C", "D",
+  "E", "F", "G", "H",
+  "I", "J", "K", "L",
+  "M", "N", "O", "P",
+  "Q", "R", "S", "T",
+  "U", "V", "W", "X",
+  "Y", "Z", "RED", "GREEN",
+  "BLUE", "YELLOW", "UP", "DOWN"
+};
+
+
+bool sceneRunning = false;
+void checkControlButtons() {
+  if (millis() - lastBtnTime < btnDebounce) return;
+
+  bool startState = digitalRead(START_BTN_PIN);
+  bool resetState = digitalRead(RESET_BTN_PIN);
+  bool stopState = digitalRead(STOP_BTN_PIN);
+
+  // START button toggles scene on/off
+  if (startState == LOW && lastStartState == HIGH) {
+    sceneRunning = !sceneRunning;
+    if (sceneRunning) {
+      Serial.println("[BTN] START pressed → Scene STARTED");
+      // Add start scene logic here
+    } else {
+      Serial.println("[BTN] START pressed → Scene STOPPED");
+      // Add stop scene logic here
     }
-  }
-}
-// Call this inside your existing sendDiagnostics() function or separately
-void checkSX1509Buttons() {
-  for (int i = 0; i <= 13; i++) {
-    bool state = io.digitalRead(i);
-   ESP32_MAIN.print("SX1509 Button ");
-   ESP32_MAIN.print(i);
-   ESP32_MAIN.println(state == LOW ? " PRESSED" : " NOT PRESSED");
-  }
-}
-
-void twentyfive() {
-
-  //5
-  // time_display.setPixelColor(0, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(1, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(2, 255, 0, 0);  // Set the pixel color
-  // time_display.setPixelColor(3, 255, 0, 0); // Set the pixel color
-  time_display.setPixelColor(4, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(5, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(6, 255, 0, 0);  // Set the pixel color
-
-  /*------------------------------------------------------------*/
-  //2
-
-  time_display.setPixelColor(7, 255, 0, 0);   // Set the pixel color
-  time_display.setPixelColor(8, 255, 0, 0);   // Set the pixel color
-                                              // time_display.setPixelColor(9, 255, 0, 0); // Set the pixel color
-  time_display.setPixelColor(10, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(11, 255, 0, 0);  // Set the pixel color
-                                              // time_display.setPixelColor(12, 255, 0, 0); // Set the pixel color
-  time_display.setPixelColor(13, 255, 0, 0);  // Set the pixel color
-
-  /*------------------------------------------------------------*/
-  //0
-
-  time_display.setPixelColor(14, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(15, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(16, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(17, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(18, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(19, 255, 0, 0);  // Set the pixel color
-                                              //  time_display.setPixelColor(20, 255, 0, 0); // Set the pixel color
-
-  /*------------------------------------------------------------*/
-  //2
-
-  time_display.setPixelColor(21, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(22, 255, 0, 0);
-  //time_display.setPixelColor(23, 255, 0, 0); // Set the pixel color
-  time_display.setPixelColor(24, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(25, 255, 0, 0);  // Set the pixel color
-                                              // time_display.setPixelColor(26, 255, 0, 0); // Set the pixel color
-  time_display.setPixelColor(27, 255, 0, 0);  // Set the pixel color
-
-  time_display.show();
-}
-void five_ten() {
-
-  time_display.setPixelColor(0, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(1, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(2, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(3, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(4, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(5, 255, 0, 0);  // Set the pixel color
-  // time_display.setPixelColor(6, 255, 0, 0); // Set the pixel color
-
-  /*------------------------------------------------------------*/
-
-
-  time_display.setPixelColor(7, 255, 0, 0);  // Set the pixel color
-  // time_display.setPixelColor(8, 255, 0, 0); // Set the pixel color
-  // time_display.setPixelColor(9, 255, 0, 0); // Set the pixel color
-  //  time_display.setPixelColor(10, 255, 0, 0); // Set the pixel color
-  // time_display.setPixelColor(11, 255, 0, 0); // Set the pixel color
-  time_display.setPixelColor(12, 255, 0, 0);  // Set the pixel color
-  // time_display.setPixelColor(13, 255, 0, 0); // Set the pixel color
-
-  /*------------------------------------------------------------*/
-
-
-  time_display.setPixelColor(14, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(15, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(16, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(17, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(18, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(19, 255, 0, 0);  // Set the pixel color
-  // time_display.setPixelColor(20, 255, 0, 0); // Set the pixel color
-
-  /*------------------------------------------------------------*/
-  //5
-
-  //time_display.setPixelColor(21, 255, 0, 0); // Set the pixel color
-  time_display.setPixelColor(22, 255, 0, 0);
-  time_display.setPixelColor(23, 255, 0, 0);  // Set the pixel color
-  // time_display.setPixelColor(24, 255, 0, 0); // Set the pixel color
-  time_display.setPixelColor(25, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(26, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(27, 255, 0, 0);  // Set the pixel color
-
-  time_display.show();
-}
-void zero() {
-
-  time_display.setPixelColor(0, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(1, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(2, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(3, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(4, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(5, 255, 0, 0);  // Set the pixel color
-  //time_display.setPixelColor(6, 255, 0, 0); // Set the pixel color
-
-  /*------------------------------------------------------------*/
-
-
-  time_display.setPixelColor(7, 255, 0, 0);   // Set the pixel color
-  time_display.setPixelColor(8, 255, 0, 0);   // Set the pixel color
-  time_display.setPixelColor(9, 255, 0, 0);   // Set the pixel color
-  time_display.setPixelColor(10, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(11, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(12, 255, 0, 0);  // Set the pixel color
-  //  time_display.setPixelColor(13, 255, 0, 0); // Set the pixel color
-
-  /*------------------------------------------------------------*/
-
-
-  time_display.setPixelColor(14, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(15, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(16, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(17, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(18, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(19, 255, 0, 0);  // Set the pixel color
-  //  time_display.setPixelColor(20, 255, 0, 0); // Set the pixel color
-
-  /*------------------------------------------------------------*/
-
-
-  time_display.setPixelColor(21, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(22, 255, 0, 0);
-  time_display.setPixelColor(23, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(24, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(25, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(26, 255, 0, 0);  // Set the pixel color
-  //  time_display.setPixelColor(27, 255, 0, 0); // Set the pixel color
-
-  time_display.show();
-}
-void ninefourtwo() {  //
-
-  time_display.setPixelColor(0, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(1, 255, 0, 0);  // Set the pixel color
-  // time_display.setPixelColor(2, 255, 0, 0); // Set the pixel color
-  time_display.setPixelColor(3, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(4, 255, 0, 0);  // Set the pixel color
-  // time_display.setPixelColor(5, 255, 0, 0); // Set the pixel color
-  time_display.setPixelColor(6, 255, 0, 0);  // Set the pixel color
-
-  /*------------------------------------------------------------*/
-
-
-  time_display.setPixelColor(7, 255, 0, 0);  // Set the pixel color
-  // time_display.setPixelColor(8, 255, 0, 0); // Set the pixel color
-  time_display.setPixelColor(9, 255, 0, 0);  // Set the pixel color
-  //  time_display.setPixelColor(10, 255, 0, 0); // Set the pixel color
-  // time_display.setPixelColor(11, 255, 0, 0); // Set the pixel color
-  time_display.setPixelColor(12, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(13, 255, 0, 0);  // Set the pixel color
-
-  /*------------------------------------------------------------*/
-
-
-  time_display.setPixelColor(14, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(15, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(16, 255, 0, 0);  // Set the pixel color
-  // time_display.setPixelColor(17, 255, 0, 0); // Set the pixel color
-  time_display.setPixelColor(18, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(19, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(20, 255, 0, 0);  // Set the pixel color
-
-  /*------------------------------------------------------------*/
-
-
-  time_display.setPixelColor(21, 255, 0, 0);  // Set the pixel color
-  // time_display.setPixelColor(22, 255, 0, 0);
-  //  time_display.setPixelColor(23, 255, 0, 0); // Set the pixel color
-  // time_display.setPixelColor(24, 255, 0, 0); // Set the pixel color
-  // time_display.setPixelColor(25, 255, 0, 0); // Set the pixel color
-  time_display.setPixelColor(26, 255, 0, 0);  // Set the pixel color
-  //   time_display.setPixelColor(27, 255, 0, 0); // Set the pixel color
-
-  time_display.show();
-}
-void oneeightfourtwo() {
-
-  time_display.setPixelColor(0, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(1, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(2, 255, 0, 0);  // Set the pixel color
-  // time_display.setPixelColor(3, 255, 0, 0); // Set the pixel color
-  time_display.setPixelColor(4, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(5, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(6, 255, 0, 0);  // Set the pixel color
-
-  /*------------------------------------------------------------*/
-
-
-  time_display.setPixelColor(7, 255, 0, 0);   // Set the pixel color
-  time_display.setPixelColor(8, 255, 0, 0);   // Set the pixel color
-  time_display.setPixelColor(9, 255, 0, 0);   // Set the pixel color
-  time_display.setPixelColor(10, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(11, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(12, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(13, 255, 0, 0);  // Set the pixel color
-
-  /*------------------------------------------------------------*/
-
-
-  time_display.setPixelColor(14, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(15, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(16, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(17, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(18, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(19, 255, 0, 0);  // Set the pixel color
-  time_display.setPixelColor(20, 255, 0, 0);  // Set the pixel color
-
-  /*------------------------------------------------------------*/
-
-
-  time_display.setPixelColor(21, 255, 0, 0);  // Set the pixel color
-  // time_display.setPixelColor(22, 255, 0, 0);
-  //  time_display.setPixelColor(23, 255, 0, 0); // Set the pixel color
-  // time_display.setPixelColor(24, 255, 0, 0); // Set the pixel color
-  // time_display.setPixelColor(25, 255, 0, 0); // Set the pixel color
-  time_display.setPixelColor(26, 255, 0, 0);  // Set the pixel color
-  //   time_display.setPixelColor(27, 255, 0, 0); // Set the pixel color
-
-  time_display.show();
-}
-
-
-
-void timecircuit_flicker() {
-  unsigned long currentMillis = millis();
-
-  // Check if the desired time has passed to update the LEDs
-  if (currentMillis - previousMillis >= flickerSpeed) {
-    previousMillis = currentMillis;  // Update the time for the next interval
-
-    // Update all pixels with new random colors
-    for (int i = 0; i < time_circuits.numPixels(); i++) {
-      time_circuits.setPixelColor(i, time_circuits.Color(random(256), random(256), random(256)));
-    }
-    time_circuits.show();  // Update the LEDs with the new colors
-  }
-}
-
-
-void console_flikr() {
-  unsigned long currentMillis = millis();
-
-  if (currentMillis - previousMillis >= fliker) {
-    previousMillis = currentMillis;
-    for (int i = 11; i <= 14; i++) {
-      if (random(10) == 0) {
-        machine.setPixelColor(i, 255, 255, 255);
-
-      } else {
-        machine.setPixelColor(i, 0, 0, 0);
-      }
-    }
-    machine.show();
-  }
-}
-
-
-void shocking() {
-  unsigned long currentMillis = millis();
-
-  if (currentMillis - previousMillis >= electric) {
-    previousMillis = currentMillis;
-    for (int i = 0; i < 20; i++) {
-      machine.setPixelColor(i, 255, 255, 255);
-    }
-
-    delay(50);
-    machine.clear();
-    machine.show();
-
-    if (currentMillis - previousMillis >= electric) {
-      previousMillis = currentMillis;
-      for (int i = 0; i < 20; i++) {
-        time_display.setPixelColor(i, 255, 255, 255);
-      }
-      for (int i = 1; i < 50; i++) {
-        machine.setPixelColor(i, 255, 255, 255);
-      }
-      time_display.show();
-      machine.show();
-      delay(50);
-      time_display.clear();
-      machine.clear();
-      time_display.show();
-      machine.show();
-    }
-  }
-}
-
-
-void twink() {
-  unsigned long currentMillis = millis();
-
-  if (currentMillis - previousMillis >= twinkle) {
-    previousMillis = currentMillis;
-
-    // Generate a new random interval for the next update
-    twinkle = random(2, 100);  // Flash quicker with shorter intervals
-
-    for (int i = 22; i < 28; i++) {
-      if (random(97) == 0) {  // 50% chance for this LED to light up
-        // Generate a random brightness level
-        int brightness = random(5, 100);  // Adjust range for subtle or bright twinkle
-        // Set the pixel with the random brightness (white light)
-        machine.setPixelColor(i, brightness, brightness, brightness);
-      } else {
-        // Keep the pixel off
-        machine.setPixelColor(i, 0, 0, 0);
-      }
-    }
-
-    machine.show();  // Refresh the LEDs to show the changes
-  }
-}
-
-void time_flikr() {
-  unsigned long currentMillis = millis();
-
-  if (currentMillis - previousMillis >= timefliker) {
-    previousMillis = currentMillis;
-    for (int i = 0; i <= 30; i++) {
-      if (random(10) == 0) {
-        time_display.setPixelColor(i, 255, 255, 255);
-
-      } else {
-        time_display.setPixelColor(i, 0, 0, 0);
-      }
-    }
-    time_display.show();
-  }
-}
-
-void console_fade() {
-  unsigned long currentMillis = millis();
-
-  // Fade only after a specified time has passed
-  if (currentMillis - previousMillis >= fade_time) {
-    previousMillis = currentMillis;
-
-    // Smooth fade from black (0) to full brightness (255)
-    for (int brightness = 0; brightness <= 255; brightness++) {  // Change direction of the loop
-      for (int i = 0; i <= 9; i++) {
-        // Set color with the current brightness level (RGB values for white)
-        time_circuits.setPixelColor(i, time_circuits.Color(brightness, brightness, brightness));
-      }
-
-      time_circuits.show();  // Update LED colors only once after setting all pixels
-      delay(10);             // Add a short delay for the fade effect to be visible
-    }
-  }
-}
-
-void console_fade_out() {
-  unsigned long currentMillis = millis();
-
-  // Fade only after a specified time has passed
-  if (currentMillis - previousMillis >= fade_time) {
-    previousMillis = currentMillis;
-
-    // Smooth fade from full brightness (255) to black (0)
-    for (int brightness = 255; brightness >= 0; brightness--) {
-      for (int i = 11; i <= 17; i++) {
-        // Set color with the current brightness level (RGB values for white)
-        machine.setPixelColor(i, machine.Color(brightness, brightness, brightness));
-      }
-
-      machine.show();  // Update LED colors only once after setting all pixels
-      delay(70);       // Add a short delay for the fade effect to be visible
-    }
-  }
-}
-
-
-const long twinkleDelay = 5;            // Delay in milliseconds for the twinkle effect
-int ledIndices[] = { 18, 19, 20, 21 };  // Array of LED indices
-void twinkleLEDs() {
-  unsigned long currentMillis = millis();  // Get the current time
-                                           // Check if it's time to update the LEDs
-  if (currentMillis - previousMillis >= twinkleDelay) {
-    previousMillis = currentMillis;  // Save the last update time
-
-    // Update each LED randomly
-    for (int i = 0; i < 4; i++) {
-      int r = random(0, 2);  // Randomly turn the LED on (green) or off (black)
-      if (r == 1) {
-        machine.setPixelColor(ledIndices[i], 255, 255, 255);  // Turn LED green
-      } else {
-        machine.setPixelColor(ledIndices[i], 0, 0, 0);  // Turn LED off
-      }
-    }
-
-    machine.show();  // Apply the changes to the LEDs
-  }
-}
-
-
-// Variables for glitch effects
-unsigned long previousMillisPixel1 = 0;
-unsigned long previousMillisPixel2 = 0;
-unsigned long glitchIntervalPixel1 = random(200, 700);  // Random initial interval for Pixel 1
-unsigned long glitchIntervalPixel2 = random(200, 700);  // Random initial interval for Pixel 2
-int brightnessPixel1 = 200;                             // Initial brightness for Pixel 1
-int brightnessPixel2 = 200;                             // Initial brightness for Pixel 2
-void glitchEffect() {
-  unsigned long currentMillis = millis();
-
-  // Handle Pixel 1 glitch
-  if (currentMillis - previousMillisPixel1 >= glitchIntervalPixel1) {
-    previousMillisPixel1 = currentMillis;
-    glitchIntervalPixel1 = random(200, 700);  // Set a new random interval
-
-    // Subtly vary the brightness for Pixel 1
-    brightnessPixel1 = random(50, 150);                                     // Slight dimming or brightening
-    machine.setPixelColor(1, brightnessPixel1, brightnessPixel1 * 0.8, 0);  // Dirty yellow
-    machine.show();
+    lastBtnTime = millis();
   }
 
-  // Handle Pixel 2 glitch
-  if (currentMillis - previousMillisPixel2 >= glitchIntervalPixel2) {
-    previousMillisPixel2 = currentMillis;
-    glitchIntervalPixel2 = random(200, 700);  // Set a new random interval
-
-    // Subtly vary the brightness for Pixel 2
-    brightnessPixel2 = random(50, 150);                                     // Slight dimming or brightening
-    machine.setPixelColor(2, brightnessPixel2, brightnessPixel2 * 0.8, 0);  // Dirty yellow
-    machine.show();
-  }
-}
-void glitchRed() {
-  unsigned long currentMillis = millis();
-
-  // Handle Pixel 1 glitch
-  static unsigned long previousMillisPixel1 = 0;
-  static int glitchIntervalPixel1 = random(200, 700);
-  static int brightnessPixel1 = random(20, 255);
-
-  if (currentMillis - previousMillisPixel1 >= glitchIntervalPixel1) {
-    previousMillisPixel1 = currentMillis;
-    glitchIntervalPixel1 = random(200, 700);  // Set a new random interval
-
-    // Subtly vary the brightness for Pixel 1
-    brightnessPixel1 = random(20, 255);                // Slight dimming or brightening
-    machine.setPixelColor(1, brightnessPixel1, 0, 0);  // Pure red with varying brightness
-    machine.show();
+  // EMERGENCY STOP
+  if (stopState == LOW && lastStopState == HIGH) {
+    Serial.println("[BTN] EMERGENCY STOP triggered");
+    sceneRunning = false;
+    // Add emergency stop logic here (turn off everything NOW)
+    lastBtnTime = millis();
   }
 
-  // Handle Pixel 2 glitch
-  static unsigned long previousMillisPixel2 = 0;
-  static int glitchIntervalPixel2 = random(200, 700);
-  static int brightnessPixel2 = random(50, 150);
-
-  if (currentMillis - previousMillisPixel2 >= glitchIntervalPixel2) {
-    previousMillisPixel2 = currentMillis;
-    glitchIntervalPixel2 = random(200, 700);  // Set a new random interval
-
-    // Subtly vary the brightness for Pixel 2
-    brightnessPixel2 = random(50, 255);                // Slight dimming or brightening
-    machine.setPixelColor(2, brightnessPixel2, 0, 0);  // Pure red with varying brightness
-    machine.show();
-  }
-}
-
-
-void initializeRelays() {
-  pinMode(RELAY1_PIN, OUTPUT);
-  pinMode(RELAY2_PIN, OUTPUT);
-  pinMode(RELAY3_PIN, OUTPUT);
-  pinMode(RELAY4_PIN, OUTPUT);
-  pinMode(RELAY5_PIN, OUTPUT);
-  pinMode(RELAY6_PIN, OUTPUT);
-  pinMode(RELAY7_PIN, OUTPUT);
-  pinMode(RELAY8_PIN, OUTPUT);
-  digitalWrite(RELAY1_PIN, LOW);  // Relay off
-  digitalWrite(RELAY2_PIN, LOW);  // Relay off
-  digitalWrite(RELAY3_PIN, LOW);  // Relay off
-  digitalWrite(RELAY4_PIN, LOW);  // Relay off
-  digitalWrite(RELAY5_PIN, LOW);  // Relay off
-  digitalWrite(RELAY6_PIN, LOW);  // Relay off
-  digitalWrite(RELAY7_PIN, LOW);  // Relay off
-  digitalWrite(RELAY8_PIN, LOW);  // Relay off
-}
-void initializeNeoPixels() {
-  machine.begin();
-  machine.clear();
-  machine.show();
-  time_circuits.begin();
-  time_circuits.clear();
-  time_circuits.show();
-  pixels.begin();
-  pixels.clear();
-  pixels.show();
-  time_display.begin();
-  time_display.clear();
-  time_display.show();
-}
-
-
-
-
-
-// Function to handle emergency stop
-void handleEmergencyStop() {
-  emergencyStopActive = true;
-  delay(200);  // Debounce delay after detecting the button press
-  Serial.println("emergency stop");
-
-
-  digitalWrite(RELAY1_PIN, HIGH);  //  relay on
-  digitalWrite(RELAY2_PIN, HIGH);  //  relay on
-  digitalWrite(RELAY3_PIN, HIGH);  //  relay on
-  digitalWrite(RELAY4_PIN, HIGH);  //  relay on
-  digitalWrite(RELAY5_PIN, HIGH);  //  relay on
-  digitalWrite(RELAY6_PIN, HIGH);  //  relay on
-  digitalWrite(RELAY7_PIN, HIGH);  //  relay on
-  digitalWrite(RELAY8_PIN, HIGH);  //  relay on
-
-
-  machine.clear();
-  machine.show();
-  Serial.println("Emergency Stop Activated");
-  machine.clear();
-  for (int i = 0; i <= 100; i++) {
-    machine.setPixelColor(i, machine.Color(255, 255, 255));  // white color
-  }
-  machine.show();
-  time_display.clear();
-  for (int i = 0; i <= 100; i++) {
-    time_display.setPixelColor(i, time_display.Color(255, 255, 255));  // white color
-  }
-  time_display.show();
-  pixels.clear();
-  for (int i = 0; i <= 100; i++) {
-    pixels.setPixelColor(i, pixels.Color(255, 255, 255));  // white color
-  }
-  pixels.show();
-  time_circuits.clear();
-  for (int i = 0; i <= 100; i++) {
-    time_circuits.setPixelColor(i, time_circuits.Color(255, 255, 255));  // white color
-  }
-  time_circuits.show();
-}
-
-
-// Function to handle system reset
-void handleReset() {
-  unsigned long currentMillis = millis();
-  digitalWrite(RELAY1_PIN, LOW);  //  relay off
-  digitalWrite(RELAY2_PIN, LOW);  //  relay off
-  digitalWrite(RELAY3_PIN, LOW);  //  relay off
-  digitalWrite(RELAY4_PIN, LOW);  //  relay off
-  digitalWrite(RELAY5_PIN, LOW);  //  relay off
-  digitalWrite(RELAY6_PIN, LOW);  //  relay off
-  digitalWrite(RELAY7_PIN, LOW);  //  relay off
-  digitalWrite(RELAY8_PIN, LOW);  //  relay off
-
-
-
-
-  machine.clear();
-  machine.show();
-  sceneActive = false, scene1Active = false, scene2Active = false, scene3Active = false,
-  scene4Active = false, scene5Active = false, scene6Active = false,
-  scene7Active = false, scene8Active = false, scene9Active = false,
-  scene10Active = false, idle = false;
-  startPressed = false;
-  emergencyStopActive = false;
-  Serial.println("System Reset");
-
-
-  machine.clear();
-  machine.show();
-  time_circuits.clear();
-  time_circuits.show();
-  pixels.clear();
-  pixels.show();
-  time_display.clear();
-  time_display.show();
-
-  cute.play(S_MODE3);
-}
-
-void handleStartButton() {  ///  acting as scene 1
-  unsigned long currentMillis = millis();
-
-  startPressed = true;
-
-
-  startMillis = millis();
-  Serial.println("Start Button Pressed");
-
-
-  // Continue with the rest of the logic after fading completes
-
-  scene1Active = true;
-  Serial.println("Scene 1 Activated");
-
-
-  // Define scene timestamps
-  unsigned long scene1stamp1 = millis();
-  unsigned long scene1stamp2 = scene1stamp1 + 5000;  // First delay ends
-  unsigned long scene1stamp3 = scene1stamp2 + 8000;  // Second delay ends
-  unsigned long scene1stamp4 = scene1stamp3 + 5000;  // Third delay ends
-  unsigned long scene1stamp5 = scene1stamp4 + 5000;  // fourth delay ends
-  unsigned long scene1stamp6 = scene1stamp5 + 5000;  // fifth delay ends
-  unsigned long scene1stamp7 = scene1stamp6 + 5000;  // sixth delay ends
-  unsigned long idleStart = scene1stamp7 + 8000;     // Enter idle state after this
-
-  while (millis() < idleStart) {
-    unsigned long currentMillis = millis();
-
-    // First 5000ms action
-    if (currentMillis >= scene1stamp1 && currentMillis < scene1stamp2) {
-
-      console_fade();
-
-      // Fade only after a specified time has passed
-    }
-
-    // Second 5000ms action
-    if (currentMillis >= scene1stamp2 && currentMillis < scene1stamp3) {
-
-      Serial.println("Scene 1: Action 2 executed.");
-
-      timecircuit_flicker();
-      machine.setPixelColor(1, 255, 255, 0);    // Set the pixel color      //gauge 1
-      machine.setPixelColor(2, 255, 255, 255);  // Set the pixel color      // gauge 2
-      machine.setPixelColor(18, 0, 255, 0);     // Set the pixel color      // door open
-      machine.setPixelColor(19, 0, 255, 0);     // Set the pixel color      // door open
-      machine.setPixelColor(20, 0, 255, 0);     // Set the pixel color      // door open
-      machine.setPixelColor(21, 0, 255, 0);     // Set the pixel color      // door open
-      machine.show();
-      twentyfive();
-    }
-    // Third 5000ms action
-    if (currentMillis >= scene1stamp3 && currentMillis < scene1stamp4) {
-
-
-      Serial.println("Scene 1: Action 3 executed.");
-      timecircuit_flicker();
-      machine.setPixelColor(0, 255, 255, 255);  // steam on
-      machine.show();
-      digitalWrite(RELAY1_PIN, HIGH);
-    }
-
-
-    // fourth 5000ms action
-    if (currentMillis >= scene1stamp4 && currentMillis < scene1stamp5) {
-
-      Serial.println("Scene 1: Action 4 executed.");
-      timecircuit_flicker();
-      machine.setPixelColor(0, 0, 0, 0);  // steam off
-      machine.show();
-      digitalWrite(RELAY1_PIN, LOW);
-    }
-    // fifth 5000ms action
-    if (currentMillis >= scene1stamp5 && currentMillis < scene1stamp6) {
-
-
-      Serial.println("Scene 1: Action 5 executed.");
-      timecircuit_flicker();
-    }
-
-    // sixth 5000ms action
-    if (currentMillis >= scene1stamp6 && currentMillis < scene1stamp7) {
-
-      Serial.println("Scene 1: Action 6 executed.");
-      timecircuit_flicker();
-    }
-
-    // Enter idle state after 8000ms with no input
-    if (currentMillis >= scene1stamp7 && currentMillis < idleStart) {
-
-      Serial.println("Scene 1: Waiting for input.");
-      timecircuit_flicker();
-    }
-
-    // Check for emergency stop
-    handleEmergencyStop();
-    if (emergencyStopActive && scene1Active) {
-      Serial.println("Emergency Stop triggered");
-
-
-      return;  // Exit the Scene 1 logic
-    }
+  // RESET
+  if (resetState == LOW && lastResetState == HIGH) {
+    Serial.println("[BTN] RESET pressed");
+    sceneRunning = false;
+    // Add reset logic here
+    lastBtnTime = millis();
   }
 
-
-  flickerSpeed = 900;
-  Serial.println("Scene 1: Entering idle state.");
-  timecircuit_flicker();
-}
-
-void IDLE() {
-
-  Serial.println("IDLE Activated");
-
-  for (int i = 0; i < machine.numPixels(); i++) {
-    machine.setPixelColor(i, machine.Color(255, 0, 255));  // Purple
-  }
-  machine.show();
-  sceneActive = false, scene1Active = false, scene2Active = false, scene3Active = false,
-  scene4Active = false, scene5Active = false, scene6Active = false,
-  scene7Active = false, scene8Active = false, scene9Active = false,
-  scene10Active = false, idle = true;
-  startPressed = false;
-  emergencyStopActive = false;
-  // handleScenes();
-  // Check emergency stop first to override everything
-  //handleEmergencyStop();
-}
-void scene2() {
-
-
-  scene2Active = true;
-  Serial.println("Scene 2 Activated");
-
-
-  // Define scene timestamps
-  unsigned long scene2stamp1 = millis();
-  unsigned long scene2stamp2 = scene2stamp1 + 5000;
-  unsigned long scene2stamp3 = scene2stamp2 + 8000;
-  unsigned long scene2stamp4 = scene2stamp3 + 5000;
-  unsigned long scene2stamp5 = scene2stamp4 + 5000;
-  unsigned long scene2stamp6 = scene2stamp5 + 5000;
-  unsigned long scene2stamp7 = scene2stamp6 + 5000;
-  unsigned long idleStart = scene2stamp7 + 8000;
-
-  while (millis() < idleStart) {
-    unsigned long currentMillis = millis();
-
-    if (currentMillis >= scene2stamp1 && currentMillis < scene2stamp2) {
-
-      Serial.println("Scene 2: Action 1 executed.");
-    }
-
-    if (currentMillis >= scene2stamp2 && currentMillis < scene2stamp3) {
-
-      Serial.println("Scene 2: Action 2 executed.");
-    }
-
-    if (currentMillis >= scene2stamp3 && currentMillis < scene2stamp4) {
-
-      Serial.println("Scene 2: Action 3 executed.");
-    }
-
-    if (currentMillis >= scene2stamp7 && currentMillis < idleStart) {
-
-      Serial.println("Scene 2: Waiting for input.");
-    }
-
-    handleEmergencyStop();
-    if (emergencyStopActive && scene2Active) {
-      Serial.println("Emergency Stop triggered");
-      return;
-    }
-  }
-
-  flickerSpeed = 900;
-  Serial.println("Scene 2: Entering idle state.");
-  scene2Active = false;
-  IDLE();
-}
-void scene3() {
-
-
-  Serial.println("Scene 3 Activated");
-
-
-  for (int i = 0; i < machine.numPixels(); i++) {
-    machine.setPixelColor(i, machine.Color(0, 0, 255));  // Blue
-  }
-  machine.show();
-
-  digitalWrite(RELAY_PINS[4], HIGH);  // Relay logic for Scene 3
-  digitalWrite(RELAY_PINS[5], HIGH);
-}
-void scene4() {
-
-
-  Serial.println("Scene 4 Activated");
-
-
-  for (int i = 0; i < machine.numPixels(); i++) {
-    machine.setPixelColor(i, machine.Color(255, 255, 0));  // Yellow
-  }
-  machine.show();
-
-  digitalWrite(RELAY_PINS[6], HIGH);  // Relay logic for Scene 4
-  digitalWrite(RELAY_PINS[7], HIGH);
-}
-void scene5() {
-
-
-  Serial.println("Scene 5 Activated");
-
-
-  for (int i = 0; i < machine.numPixels(); i++) {
-    machine.setPixelColor(i, machine.Color(255, 0, 255));  // Purple
-  }
-  machine.show();
-
-  digitalWrite(RELAY_PINS[8], HIGH);  // Relay logic for Scene 5
-  digitalWrite(RELAY_PINS[9], HIGH);
-}
-void scene6() {
-
-
-  Serial.println("Scene 6 Activated");
-
-
-  for (int i = 0; i < machine.numPixels(); i++) {
-    machine.setPixelColor(i, machine.Color(255, 0, 255));  // Purple
-  }
-  machine.show();
-
-  digitalWrite(RELAY_PINS[8], HIGH);  // Relay logic for Scene 5
-  digitalWrite(RELAY_PINS[9], HIGH);
-}
-void scene7() {
-
-
-  Serial.println("Scene 7 Activated");
-
-  for (int i = 0; i < machine.numPixels(); i++) {
-    machine.setPixelColor(i, machine.Color(255, 0, 255));  // Purple
-  }
-  machine.show();
-
-  digitalWrite(RELAY_PINS[8], HIGH);  // Relay logic for Scene 5
-  digitalWrite(RELAY_PINS[9], HIGH);
-}
-void scene8() {
-
-
-  Serial.println("Scene 8 Activated");
-
-  for (int i = 0; i < machine.numPixels(); i++) {
-    machine.setPixelColor(i, machine.Color(255, 0, 255));  // Purple
-  }
-  machine.show();
-
-  digitalWrite(RELAY_PINS[8], HIGH);  // Relay logic for Scene 5
-  digitalWrite(RELAY_PINS[9], HIGH);
-}
-void scene9() {
-
-
-  Serial.println("Scene 9 Activated");
-
-  for (int i = 0; i < machine.numPixels(); i++) {
-    machine.setPixelColor(i, machine.Color(255, 0, 255));  // Purple
-  }
-  machine.show();
-
-  digitalWrite(RELAY_PINS[8], HIGH);  // Relay logic for Scene 5
-  digitalWrite(RELAY_PINS[9], HIGH);
-}
-void scene10() {
-
-
-  Serial.println("Scene 10 Activated");
-
-
-  for (int i = 0; i < machine.numPixels(); i++) {
-    machine.setPixelColor(i, machine.Color(255, 0, 255));  // Purple
-  }
-  machine.show();
-
-  digitalWrite(RELAY_PINS[8], HIGH);  // Relay logic for Scene 5
-  digitalWrite(RELAY_PINS[9], HIGH);
+  lastStartState = startState;
+  lastResetState = resetState;
+  lastStopState = stopState;
 }
 
 
-void sendDiagnostics() {
-    int pwrStatus = digitalRead(PWR_OK_PIN);
-
-    float v5 = analogRead(VOLTAGE_5V) * (5.0 / 1023.0);
-    float v3 = analogRead(VOLTAGE_3V3) * (3.3 / 1023.0);
-    float v5sb = analogRead(STANDBY_POWER) * (5.0 / 1023.0);
-
-    // New line for 12V measurement
-    float v12Raw = analogRead(VOLTAGE_12V);
-    float v12 = v12Raw * (5.0 / 1023.0) * ((10.0 + 4.7) / 4.7); // Scales up the voltage
-
-   ESP32_MAIN.print("PWR_OK: ");
-   ESP32_MAIN.println(pwrStatus == HIGH ? "STABLE" : "UNSTABLE");
-
-   ESP32_MAIN.print("V5: ");
-   ESP32_MAIN.print(v5);
-   ESP32_MAIN.print("V, V3.3: ");
-   ESP32_MAIN.print(v3);
-   ESP32_MAIN.print("V, 5VSB: ");
-   ESP32_MAIN.print(v5sb);
-   ESP32_MAIN.print("V, V12: ");
-   ESP32_MAIN.print(v12);
-   ESP32_MAIN.println("V");
-}
-
-
-void runSelfTest() {
- ESP32_MAIN.println("🔧 Running Self-Test...");
-
-  // Check Relays
-  for (int i = 2; i <= 9; i++) {  // Example: Relays on pins 2-9
-    pinMode(i, OUTPUT);
-    digitalWrite(i, HIGH);
-    delay(100);
-    digitalWrite(i, LOW);
-   ESP32_MAIN.print("Relay ");
-   ESP32_MAIN.print(i);
-   ESP32_MAIN.println(" OK");
-  }
-
- checkSX1509Buttons();
-
-  // Check NeoPixels (If used)
- ESP32_MAIN.println("NeoPixel Test: SUCCESS");
-
-  // Send completion message
- ESP32_MAIN.println("✅ Self-Test Completed");
-}
-// Revised self-test function
-void runSelfTest(int step) {
-    switch (step) {
-        case 0:
-           ESP32_MAIN.println("🔄 Relay Test: ON/OFF");
-            bool relayTestPassed = true;
-            for (int i = 2; i <= 9; i++) {  
-                pinMode(i, OUTPUT);
-                digitalWrite(i, HIGH);
-                delay(100);
-                digitalWrite(i, LOW);
-                delay(100);
-            }
-           ESP32_MAIN.println(relayTestPassed ? "✅ Relay Test: PASS" : "❌ Relay Test Failed!");
-            break;
-
-        case 1:
-           ESP32_MAIN.println("🔘 SX1509 Button Test");
-            bool buttonTestPassed = true;
-            for (int i = 10; i <= 13; i++) {
-                bool state = io.digitalRead(i);
-                if (state == HIGH) { // Expect LOW if pressed (since pull-up)
-                    buttonTestPassed = false;
-                   ESP32_MAIN.print("❌ Button NOT PRESSED on SX1509 pin: ");
-                   ESP32_MAIN.println(i);
-                } else {
-                   ESP32_MAIN.print("✅ Button ");
-                   ESP32_MAIN.print(i);
-                   ESP32_MAIN.println(" OK");
-                }
-            }
-           ESP32_MAIN.println(buttonTestPassed ? "✅ Buttons PASS" : "❌ Buttons FAIL");
-            break;
-
-        case 2:
-           ESP32_MAIN.println("✅ Self-Test Completed!");
-           ESP32_MAIN.println("PASS");
-            break;
-    }
-}
 
 
 
 void setupRTC() {
   Wire.begin();
+
   if (!rtc.begin()) {
-    Serial.println("RTC not found!");
-    while (1);
+    Serial.println("[RTC] Couldn't find DS1307. Check wiring.");
+    // while (1);  // halt
   }
 
   if (!rtc.isrunning()) {
-    Serial.println("RTC wasn't running, setting the time now.");
+    Serial.println("[RTC] Clock is NOT running. Setting to compile time.");
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
   }
+
+  Serial.println("[RTC] DS1307 Initialized.");
 }
 
-void sendRTCData() {
-    DateTime now = rtc.now();  // Assuming your RTC object is `rtc`
-    String timeString = String(now.hour()) + ":" +
-                        String(now.minute()) + ":" +
-                        String(now.second());
-
-    Serial1.print("TIME:");
-    Serial1.println(timeString);
+void sendToESP(const String& message) {
+  Serial.println("[TO ESP] " + message);
+  Serial1.println("@ESP: " + message);
 }
 
 
-// === Diagnostic Functions ===
-
-void sendRelayStatus() {
-    // Example relay status check logic
-    String relayStatus = "OK - All Relays Functioning";
-    
-    // If you have specific relay pin checks, add them here
-    if (digitalRead(RELAY1_PIN) == LOW) relayStatus = "WARNING - Relay 1 is OFF";
-    if (digitalRead(RELAY2_PIN) == LOW) relayStatus = "WARNING - Relay 2 is OFF";
-
-    ESP32_MAIN.println(relayStatus);
-}
-
-void sendNeoPixelStatus() {
-    // Example NeoPixel status check
-    bool neoPixelWorking = true; // Replace with actual check logic
-    if (neoPixelWorking) {
-        ESP32_MAIN.println("OK - NeoPixels Responding");
-    } else {
-        ESP32_MAIN.println("ERROR - NeoPixels Not Detected");
-    }
-}
-
-void sendVoltageTemperature() {
-    float voltage = analogRead(A0) * (5.0 / 1023.0); // Example analog voltage reading
-    float temperature = 24.3; // Example static temp value — replace with actual sensor logic
-
-    String voltageTempStatus = String(voltage, 2) + "V | Temp: " + String(temperature, 1) + "°C";
-    ESP32_MAIN.println(voltageTempStatus);
+void setupSerialComms() {
+  Serial.begin(9600);
+  Serial1.begin(115200);
+  delay(100);
+  sendToESP("{SYS} Mega is online.");
 }
 
 
-void smoke_control(int value, unsigned long duration) {
-    if (!smokeActive) {
-        DmxSimple.write(DMX_CHANNEL, value);
-        Serial.print("Smoke Output Value: ");
-        Serial.println(value);
-        smokeStartTime = millis();
-        smokeActive = true;
-    }
-
-    if (smokeActive && millis() - smokeStartTime >= duration) {
-        DmxSimple.write(DMX_CHANNEL, 0); // Turn smoke machine off
-        Serial.println("Smoke Turned Off");
-        smokeActive = false;
-    }
-}
-
-// smoke_control(128, 2000);  // Example usage: smoke on at value 128 for 2000ms
-
-
-        // === MP3 Player Control Commands (Commented for Now) ===
-        // ESP32_MAIN.println("PLAY_AMBIENT_1");  // Plays ambient track 1
-        // ESP32_MAIN.println("STOP_AMBIENT");    // Stops ambient track
-        // ESP32_MAIN.println("PLAY_MACHINE_2");  // Plays machine track 2
-        // ESP32_MAIN.println("STOP_MACHINE");    // Stops machine track
-    
 
 
 
@@ -1210,30 +229,14 @@ void smoke_control(int value, unsigned long duration) {
 
 
 
-void setup() {
-    DEBUG.begin(115200);  // Debugging
-    ESP32_MAIN.begin(115200); // Communication with ESP32
-    DEBUG.println("Arduino Mega started!");
 
-  setupRTC();             // Initialize RTC
+// === SETUP ===
 
-    
-    cute.init(BUZZER_PIN);
-  cute.play(S_HAPPY_SHORT);
-   setupSX1509();
 
-   pinMode(DMX_DE_PIN, OUTPUT);
-    digitalWrite(DMX_DE_PIN, HIGH); // Enable RS485 Transmit Mode
 
-    DmxSimple.usePin(4);             // DMX output pin (TX connected to pin 4)
-    DmxSimple.maxChannel(DMX_CHANNEL); // Set max DMX channel size
-
-    Serial.println("DMX Smoke Machine Control Starting...");
-  
-  /*
+/*/ CURRENT BUZZER OPTIONS: 
  
- CURRENT buzzer OPTIONS: 
-
+ 
  S_CONNECTION   S_DISCONNECTION S_BUTTON_PUSHED   
  S_MODE1        S_MODE2         S_MODE3     
  S_SURPRISE     S_OHOOH         S_OHOOH2    
@@ -1244,80 +247,329 @@ void setup() {
 
  */
 
-  pinMode(PWR_OK_PIN, INPUT);
- ESP32_MAIN.println("ATX Power Monitoring Started (12V & TEMP Disabled)");
-  initializeRelays();
-  initializeNeoPixels();
+
+
+
+
+
+void setup() {
+  cute.init(BUZZER_PIN);
+  cute.play(S_CONNECTION);
+  Serial.begin(115200);   // USB serial monitor
+  Serial1.begin(115200);  // To ESP32 via Serial1 (TX1=18, RX1=19)
+  delay(1000);
+  Serial.println("[MEGA] Mega booted");
+  Serial1.println("@ESP: Mega booted");
+
+
+  setupRTC();  // ← Tidy and modular
+  logVoltageDiagnostics();
+  if (!io.begin(SX_ADDR)) {
+    Serial.println("[ERROR] SX1509 not detected.");
+  } else {
+    Serial.println("[OK] SX1509 online.");
+    for (int i = 0; i < numSceneButtons; i++) {
+      io.pinMode(sxSceneButtons[i], INPUT_PULLUP);
+    }
+  }
+  for (int i = 0; i < NUM_RELAYS; i++) {
+    pinMode(relayPins[i], OUTPUT);
+    digitalWrite(relayPins[i], LOW);
+    relayStates[i] = false;
+  }
+
+  for (int i = 0; i < NUM_PIXEL_LINES; i++) {
+    pixels[i].begin();
+    pixels[i].clear();
+    pixels[i].show();
+  }
+
+  pinMode(START_BTN_PIN, INPUT_PULLUP);
+  pinMode(RESET_BTN_PIN, INPUT_PULLUP);
+  pinMode(STOP_BTN_PIN, INPUT_PULLUP);
+  dht.begin();
+  Serial.println("[DHT] Sensor initialized.");
+
+
+  for (int i = 0; i < NUM_BUTTONS; i++) {
+    pinMode(buttonPins[i], INPUT_PULLUP);
+  }
+
+  pinMode(irPin, INPUT);
+  Serial.println("Showduino Mega Booted");
 }
+
+
+
+
+
+
+
+
+// === END OF SETUP ===
+
+
+
+
+
+
+
 
 
 
 void loop() {
-    // Get current time from millis()
-    unsigned long currentMillis = millis();
-
-    // RTC: Fetch current timestamp once per loop iteration
-    static unsigned long prevRTCupdate = 0;
-    const long rtcInterval = 1000;  // 1-second intervals
-    if (currentMillis - prevRTCupdate >= rtcInterval) {
-        prevRTCupdate = currentMillis;
-
-        // === RTC Data Handling ===
-        if (rtc.begin()) {   // RTC is detected
-            DateTime now = rtc.now();
-
-            // Send timestamp to ESP32
-            ESP32_MAIN.print("TIME:");
-            ESP32_MAIN.print(now.day(), DEC);
-            ESP32_MAIN.print("/");
-            ESP32_MAIN.print(now.month(), DEC);
-            ESP32_MAIN.print("/");
-            ESP32_MAIN.print(now.year(), DEC);
-            ESP32_MAIN.print(" ");
-            ESP32_MAIN.print(now.hour(), DEC);
-            ESP32_MAIN.print(":");
-            ESP32_MAIN.print(now.minute(), DEC);
-            ESP32_MAIN.print(":");
-            ESP32_MAIN.println(now.second(), DEC);
-        } 
-        else {
-            // RTC NOT DETECTED - Send Placeholder Time
-            ESP32_MAIN.println("TIME:--:--");
-        }
+  checkButtons();         // Your relay buttons
+  checkControlButtons();  // New START/STOP/RESET buttons
+  checkSX1509Buttons();   // Scene buttons (0–9)
+  checkIR();              // Remote
+  logDHTData();           // Check and log every 40s
+  checkSerial();
+  // Auto-off check
+  // Check for timed relay auto-OFF
+  for (int i = 0; i < NUM_RELAYS; i++) {
+    if (relayUseTimer[i] && relayStates[i]) {
+      if (millis() - relayTimers[i] >= relayDuration) {
+        digitalWrite(relayPins[i], LOW);
+        relayStates[i] = false;
+        Serial.print("[TIMER] RELAY_");
+        Serial.print(i + 1);
+        Serial.println(" AUTO-OFF");
+      }
     }
+  }
 
-    // === Serial Data Handling ===
-if (ESP32_MAIN.available()) {
-    String receivedData = ESP32_MAIN.readStringUntil('\n');
-    receivedData.trim();
 
-    DEBUG.print("Received from ESP32: ");
-    DEBUG.println(receivedData);
+  // Read from Serial Monitor, send to ESP
+  if (Serial.available()) {
+    String msg = Serial.readStringUntil('\n');
+    Serial1.println("@ESP: " + msg);
+    Serial.println("[MEGA] Sent to ESP: " + msg);
+  }
 
-    // === Handle Received Commands ===
-    if (receivedData == "BUZZ") {
-        cute.play(S_BUTTON_PUSHED);
-    } 
-    else if (receivedData == "REQUEST_DIAGNOSTICS") {
-        sendDiagnostics();
-    } 
-    else if (receivedData == "REQUEST_SELF_TEST") {
-        runSelfTest();
-    } 
+  // Read from ESP32, act on commands
+  if (Serial1.available()) {
+    String msg = Serial1.readStringUntil('\n');
+    msg.trim();
+    Serial.println("[MEGA] ESP says: " + msg);
+    handleCommand(msg);  // ← This runs your relay logic!
+  }
 
-    // === New Diagnostic Responses ===
-    else if (receivedData == "RELAY_CHECK") {
-        sendRelayStatus();
-    } 
-    else if (receivedData == "NEO_CHECK") {
-        sendNeoPixelStatus();
-    } 
-    else if (receivedData == "VOLTAGE_CHECK") {
-        sendVoltageTemperature();
-    } 
-    
+  // === IR Remote Polling ===
+  if (digitalRead(irPin) == LOW) {
+    int code = remote.listen(-1);
+    if (code >= 0) {
+      for (int i = 0; i < 44; i++) {
+        if (buttonCode[i] == code) {
+          Serial.print("[IR] ");
+          Serial.println(irLabels[i]);
+          break;
+        }
+      }
+    }
+  }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+// === END OF LOOP ===
+
+
+
+
+
+
+
+
+
+
+
+// ===============888888888888888888============ WORKING LOGIC D.N.T! =================8888888======================
+
+void logDHTData() {
+  if (millis() - lastDHTLog >= DHT_INTERVAL) {
+    lastDHTLog = millis();
+
+    float h = dht.readHumidity();
+    float t = dht.readTemperature();
+
+    if (isnan(h) || isnan(t)) {
+      Serial.println("[DHT] Failed to read from sensor!");
+    } else {
+      Serial.print("[DHT] Temp: ");
+      Serial.print(t, 1);
+      Serial.print("°C  Humidity: ");
+      Serial.print(h, 1);
+      Serial.println("%");
+    }
+  }
 }
 
+void checkButtons() {
+  for (int i = 0; i < NUM_BUTTONS; i++) {
+    int reading = digitalRead(buttonPins[i]);
+
+    if (reading != buttonStates[i] && (millis() - lastDebounceTime[i]) > debounceDelay) {
+      lastDebounceTime[i] = millis();
+      buttonStates[i] = reading;
+
+      if (reading == LOW) {
+        if (i <= 6) {
+          // Relays 1–7 (Button 0–6)
+          toggleRelay(i);
+        } else if (i == 11) {
+          // Relay 8 (Button 11)
+          toggleRelay(7);
+        } else {
+          // Buttons A–C (Buttons 7–10)
+          char label = 'A' + (i - 7);  // Maps i=7→A, i=8→B, i=9→C, i=10→D
+          Serial.print("[BTN] Button ");
+          Serial.print(label);
+          Serial.println(" Pressed");
+        }
+      }
+    }
+  }
+}
+void checkSX1509Buttons() {
+  for (int i = 0; i < numSceneButtons; i++) {
+    int pin = sxSceneButtons[i];
+    bool state = io.digitalRead(pin);
+    if (state != sxPrevState[i]) {
+      sxPrevState[i] = state;
+      if (state == LOW) {
+        Serial.print("[MANUAL] Scene Button ");
+        Serial.print(i);
+        Serial.println(" Pressed");
+
+        // 🠖 Send to ESP as a trigger message
+        Serial1.print("SXBTN_");
+        Serial1.print(i);
+        Serial1.println("_TRIGGER");
+      }
+    }
+  }
+}
+
+void toggleRelay(int num) {
+  if (relayUseTimer[num]) {
+    // TIMED MODE: trigger ON for X ms
+    digitalWrite(relayPins[num], HIGH);
+    relayStates[num] = true;
+    relayTimers[num] = millis();
+    Serial.print("[TIMER] RELAY_");
+    Serial.print(num + 1);
+    Serial.println(" ON");
+  } else {
+    // MANUAL MODE: toggle state
+    relayStates[num] = !relayStates[num];
+    digitalWrite(relayPins[num], relayStates[num] ? HIGH : LOW);
+    Serial.print("[MANUAL] RELAY_");
+    Serial.print(num + 1);
+    Serial.print(" ");
+    Serial.println(relayStates[num] ? "ON" : "OFF");
+  }
+}
+void handleCommand(String cmd) {
+  Serial.println(">> CMD: " + cmd);
+
+  if (cmd.startsWith("RELAY_")) {
+    int r = cmd.substring(6, 7).toInt() - 1;
+
+    if (r >= 0 && r < NUM_RELAYS) {
+      if (cmd.endsWith("_ON")) {
+        digitalWrite(relayPins[r], HIGH);
+        relayStates[r] = true;
+        if (relayUseTimer[r]) relayTimers[r] = millis();
+        Serial.print("[OK] RELAY_");
+        Serial.print(r + 1);
+        Serial.println(" ON");
+
+      } else if (cmd.endsWith("_OFF")) {
+        digitalWrite(relayPins[r], LOW);
+        relayStates[r] = false;
+        Serial.print("[OK] RELAY_");
+        Serial.print(r + 1);
+        Serial.println(" OFF");
+
+      } else if (cmd.endsWith("_TIMER_ON")) {
+        relayUseTimer[r] = true;
+        Serial.print("[TIMER] RELAY_");
+        Serial.print(r + 1);
+        Serial.println(" → TIMED");
+
+      } else if (cmd.endsWith("_TIMER_OFF")) {
+        relayUseTimer[r] = false;
+        Serial.print("[TIMER] RELAY_");
+        Serial.print(r + 1);
+        Serial.println(" → MANUAL");
+
+      } else if (cmd.startsWith("SXBTN_") && cmd.endsWith("_TRIGGER")) {
+        int button = cmd.substring(6, cmd.indexOf("_TRIGGER")).toInt();
+        Serial.print("[SX] Remote Scene Trigger for Button ");
+        Serial.println(button);
+
+        // 🎯 Eventually trigger `loadScene(button);`
+      }
+    }
+  }
 
 
+
+  // === Timer Control ===
+  else if (cmd.startsWith("RELAY_") && cmd.endsWith("_TIMER_ON")) {
+    int r = cmd.substring(6, 7).toInt() - 1;
+    if (r >= 0 && r < NUM_RELAYS) {
+      relayUseTimer[r] = true;
+      Serial.print("[OK] RELAY_");
+      Serial.print(r + 1);
+      Serial.println(" TIMED MODE ENABLED");
+    }
+  } else if (cmd.startsWith("RELAY_") && cmd.endsWith("_TIMER_OFF")) {
+    int r = cmd.substring(6, 7).toInt() - 1;
+    if (r >= 0 && r < NUM_RELAYS) {
+      relayUseTimer[r] = false;
+      Serial.print("[OK] RELAY_");
+      Serial.print(r + 1);
+      Serial.println(" TOGGLE MODE ENABLED");
+    }
+  }
+}
+void checkIR() {
+  // IR logic already handled in loop (optional placeholder)
+}
+void checkSerial() {
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+    handleCommand(cmd);
+  }
+}
+
+void logVoltageDiagnostics() {
+  float v5V = analogRead(VOLTAGE_5V) * (5.0 / 1023.0);
+  float v3V3 = analogRead(VOLTAGE_3V3) * (5.0 / 1023.0);
+  float vSB = analogRead(STANDBY_POWER) * (5.0 / 1023.0);
+  float pwrOK = analogRead(PWR_OK_PIN) * (5.0 / 1023.0);
+  float v12V = analogRead(VOLTAGE_12V) * voltageMultiplier;
+
+  Serial.println("[VOLTAGE] Diagnostics:");
+  Serial.println("  - 5V Line      : " + String(v5V, 2) + " V");
+  Serial.println("  - 3.3V Line    : " + String(v3V3, 2) + " V");
+  Serial.println("  - 5V Standby   : " + String(vSB, 2) + " V");
+  Serial.println("  - PWR_OK Line  : " + String(pwrOK, 2) + " V");
+  Serial.println("  - 12V Sensor   : " + String(v12V, 2) + " V");
+
+  // Optional: Add warnings
+  if (v5V < 4.5) Serial.println("  ⚠️  WARNING: 5V rail under-voltage!");
+  if (v3V3 < 3.0) Serial.println("  ⚠️  WARNING: 3.3V rail under-voltage!");
+  if (v12V < 11.0) Serial.println("  ⚠️  WARNING: 12V sensor line low!");
+}
