@@ -7,8 +7,8 @@
 Adafruit_NeoPixel lantern(NUM_PIXELS, LED_PIN, NEO_GRB + NEO_KHZ800); // Set up the LEDs
 
 // WiFi network info (change these to match your network)
-const char* ssid = "Gore FX Network";     // Name of your WiFi network
-const char* password = "showduino2025";   // Password for your WiFi
+const char* ssid = "ShowDuino-AP";     // Name of your WiFi network
+const char* password = "showcontrol123";   // Password for your WiFi
 
 AsyncUDP udp;                         // Create a UDP object for network messages
  
