@@ -1,0 +1,1261 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <SD.h>
+#include <SPI.h>
+#include <TFT_eSPI.h>
+#include <ArduinoJson.h>
+#include <ESPmDNS.h>
+#include <Adafruit_NeoPixel.h>
+#include "XPT2046_Bitbang.h"
+
+// ================================================================================
+// HARDWARE CONFIGURATION - YOUR CUSTOM PINS
+// ================================================================================
+
+// Touch Screen Pins
+#define XPT2046_IRQ 36
+#define XPT2046_MOSI 32
+#define XPT2046_MISO 39
+#define XPT2046_CLK 25
+#define XPT2046_CS 33
+
+// Communication & LEDs
+#define MEGA_RX 3
+#define MEGA_TX 1
+#define CYD_LED_BLUE 17
+#define CYD_LED_RED 4
+#define CYD_LED_GREEN 16
+#define BACKLIGHT_PIN 21
+
+// SD Card Pins
+#define SD_SCK 18
+#define SD_MISO 19
+#define SD_MOSI 23
+#define SD_CS 5
+
+// Settings
+#define MEGA_BAUD_RATE 115200
+#define MAX_SCENE_ACTIONS 75
+
+// WiFi Configuration - CHANGE THESE!
+const char* WIFI_SSID = "YOUR_WIFI_SSID";
+const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+const char* AP_SSID = "ShowDuino-AP";
+const char* AP_PASSWORD = "showcontrol123";
+const char* MDNS_NAME = "showduino";
+
+// ================================================================================
+// HARDWARE OBJECTS
+// ================================================================================
+
+TFT_eSPI tft = TFT_eSPI();
+XPT2046_Bitbang touchscreen(XPT2046_MOSI, XPT2046_MISO, XPT2046_CLK, XPT2046_CS);
+Adafruit_NeoPixel logoStrip(18, 22, NEO_GRB + NEO_KHZ800);
+HardwareSerial SerialFromMega(2);
+WebServer server(80);
+
+// ================================================================================
+// SYSTEM STATE STRUCTURES
+// ================================================================================
+
+struct SystemState {
+  bool wifiConnected = false;
+  bool sdCardMounted = false;
+  bool megaConnected = false;
+  bool touchInitialized = false;
+  bool apMode = false;
+  String ipAddress = "";
+  unsigned long lastMegaHeartbeat = 0;
+  unsigned long bootTime = 0;
+  String currentError = "";
+  bool backlightOn = true;
+} systemState;
+
+struct MegaStatus {
+  float voltage5V = 0.0;
+  float voltage12V = 0.0;
+  float temperature = 0.0;
+  float humidity = 0.0;
+  unsigned long uptime = 0;
+  int commandsProcessed = 0;
+  int commandErrors = 0;
+  int activeFX = 0;
+  int activeDMX = 0;
+  String relayStates = "00000000";
+  String mp3_1_status = "S";
+  String mp3_2_status = "S";
+  String sceneStatus = "S";
+  String sceneName = "";
+  bool dataValid = false;
+  unsigned long lastUpdate = 0;
+} megaStatus;
+
+struct PerformanceMetrics {
+  unsigned long loopCount = 0;
+  unsigned long lastMetricTime = 0;
+  float loopsPerSecond = 0;
+  unsigned long maxLoopTime = 0;
+  unsigned long lastLoopTime = 0;
+  unsigned long totalCommands = 0;
+  unsigned long failedCommands = 0;
+} perfMetrics;
+
+// Display & Timing
+unsigned long lastDisplayUpdate = 0;
+unsigned long lastWiFiCheck = 0;
+unsigned long lastTouchCheck = 0;
+unsigned long lastBacklightTouch = 0;
+int currentDisplayPage = 0;
+bool touchPressed = false;
+
+const int DISPLAY_UPDATE_INTERVAL = 1000;
+const int WIFI_CHECK_INTERVAL = 30000;
+const int TOUCH_CHECK_INTERVAL = 100;
+const int BACKLIGHT_TIMEOUT = 30000;
+
+// TFT Colors
+#define COLOR_BG 0x0000
+#define COLOR_HEADER 0x001F
+#define COLOR_SUCCESS 0x07E0
+#define COLOR_WARNING 0xFFE0
+#define COLOR_ERROR 0xF800
+#define COLOR_TEXT 0xFFFF
+#define COLOR_INACTIVE 0x7BEF
+
+// ================================================================================
+// MAIN SETUP
+// ================================================================================
+
+void setup() {
+  Serial.begin(115200);
+  delay(2000);
+  
+  Serial.println("🎭 ShowDuino ESP32 v2.1 - Command Map Compatible");
+  Serial.println("===============================================");
+  
+  systemState.bootTime = millis();
+  perfMetrics.lastLoopTime = millis();
+  perfMetrics.lastMetricTime = millis();
+  
+  // Initialize hardware
+  initializePins();
+  initializeTFT();
+  initializeTouch();
+  initializeNeoPixels();
+  initializeSDCard();
+  initializeMegaCommunication();
+  startWiFiConnection();
+  initializeWebServer();
+  
+  // Start mDNS
+  if (MDNS.begin(MDNS_NAME)) {
+    Serial.println("📡 mDNS: http://showduino.local/");
+    MDNS.addService("http", "tcp", 80);
+  }
+  
+  ledStartupSequence();
+  displaySystemStatus();
+  
+  Serial.println("🚀 SYSTEM READY!");
+  Serial.println("📱 Web: http://" + systemState.ipAddress + "/");
+  Serial.println("===============================================");
+}
+
+// ================================================================================
+// HARDWARE INITIALIZATION
+// ================================================================================
+
+void initializePins() {
+  Serial.print("📌 GPIO... ");
+  
+  pinMode(CYD_LED_RED, OUTPUT);
+  pinMode(CYD_LED_GREEN, OUTPUT);
+  pinMode(CYD_LED_BLUE, OUTPUT);
+  pinMode(BACKLIGHT_PIN, OUTPUT);
+  pinMode(XPT2046_IRQ, INPUT_PULLUP);
+  
+  digitalWrite(BACKLIGHT_PIN, HIGH);
+  digitalWrite(CYD_LED_RED, HIGH); // Red = booting
+  digitalWrite(CYD_LED_GREEN, LOW);
+  digitalWrite(CYD_LED_BLUE, LOW);
+  
+  Serial.println("✅");
+}
+
+void initializeTFT() {
+  Serial.print("🖥️  TFT... ");
+  
+  tft.init();
+  tft.setRotation(3);
+  tft.fillScreen(COLOR_BG);
+  
+  // Startup screen
+  tft.setTextColor(COLOR_HEADER, COLOR_BG);
+  tft.setTextSize(2);
+  tft.drawCentreString("ShowDuino", 240, 50, 2);
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.setTextSize(1);
+  tft.drawCentreString("Command Map Compatible", 240, 80, 2);
+  
+  Serial.println("✅");
+}
+
+void initializeTouch() {
+  Serial.print("👆 Touch... ");
+  
+  touchscreen.begin();
+  systemState.touchInitialized = (digitalRead(XPT2046_IRQ) == HIGH);
+  
+  Serial.println(systemState.touchInitialized ? "✅" : "⚠️");
+}
+
+void initializeNeoPixels() {
+  Serial.print("🌈 NeoPixels... ");
+  
+  logoStrip.begin();
+  logoStrip.clear();
+  logoStrip.show();
+  
+  Serial.println("✅");
+}
+
+void initializeSDCard() {
+  Serial.print("💾 SD Card... ");
+  
+  SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+  
+  if (SD.begin(SD_CS)) {
+    systemState.sdCardMounted = true;
+    Serial.println("✅");
+    
+    // Create logs directory
+    if (!SD.exists("/logs")) {
+      SD.mkdir("/logs");
+    }
+    
+    // Check for web files
+    if (!SD.exists("/index.html")) {
+      Serial.println("⚠️  No /index.html found - will use simple fallback");
+    } else {
+      Serial.println("📄 Found custom web files on SD card");
+    }
+  } else {
+    systemState.sdCardMounted = false;
+    systemState.currentError = "SD card failed";
+    Serial.println("❌");
+  }
+}
+
+void initializeMegaCommunication() {
+  Serial.print("🔗 Mega... ");
+  
+  SerialFromMega.begin(MEGA_BAUD_RATE, SERIAL_8N1, MEGA_RX, MEGA_TX);
+  SerialFromMega.println("ESP32_HELLO:" + String(millis()));
+  
+  Serial.println("✅");
+}
+
+void startWiFiConnection() {
+  Serial.print("📶 WiFi... ");
+  
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    systemState.wifiConnected = true;
+    systemState.ipAddress = WiFi.localIP().toString();
+    systemState.apMode = false;
+    Serial.println(" ✅");
+    Serial.println("📍 IP: " + systemState.ipAddress);
+  } else {
+    Serial.println(" ❌");
+    Serial.println("🔶 Starting AP mode...");
+    
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(AP_SSID, AP_PASSWORD);
+    
+    systemState.wifiConnected = false;
+    systemState.apMode = true;
+    systemState.ipAddress = WiFi.softAPIP().toString();
+    
+    Serial.println("📶 WiFi: " + String(AP_SSID));
+    Serial.println("🔑 Pass: " + String(AP_PASSWORD));
+    Serial.println("📍 IP: " + systemState.ipAddress);
+  }
+}
+
+void ledStartupSequence() {
+  // NeoPixel wave
+  for (int i = 0; i < logoStrip.numPixels(); i++) {
+    logoStrip.setPixelColor(i, logoStrip.Color(0, 30, 60));
+    logoStrip.show();
+    delay(30);
+  }
+  
+  // Flash sequence
+  for (int flash = 0; flash < 2; flash++) {
+    logoStrip.fill(logoStrip.Color(60, 0, 0));
+    logoStrip.show();
+    delay(150);
+    logoStrip.fill(logoStrip.Color(0, 60, 0));
+    logoStrip.show();
+    delay(150);
+  }
+  
+  // Ready state
+  logoStrip.fill(logoStrip.Color(0, 20, 0));
+  logoStrip.show();
+  
+  // Status LED to green
+  digitalWrite(CYD_LED_RED, LOW);
+  digitalWrite(CYD_LED_GREEN, HIGH);
+}
+
+// ================================================================================
+// WEB SERVER - SD CARD FOCUS
+// ================================================================================
+
+void initializeWebServer() {
+  Serial.print("🌐 Web Server... ");
+  
+  // Root - Always try SD card first
+  server.on("/", HTTP_GET, []() {
+    serveFromSD("/index.html", "text/html");
+  });
+  
+  // Static files from SD
+  server.on("/style.css", HTTP_GET, []() { serveFromSD("/style.css", "text/css"); });
+  server.on("/script.js", HTTP_GET, []() { serveFromSD("/script.js", "application/javascript"); });
+  server.on("/app.js", HTTP_GET, []() { serveFromSD("/app.js", "application/javascript"); });
+  
+  // Generic file handler for images, fonts, etc.
+  server.onNotFound([]() {
+    String path = server.uri();
+    
+    // Try to serve from SD card first
+    if (systemState.sdCardMounted && SD.exists(path)) {
+      String contentType = getContentType(path);
+      serveFromSD(path, contentType);
+      return;
+    }
+    
+    // Handle API 404s with JSON
+    if (path.startsWith("/api/")) {
+      server.send(404, "application/json", "{\"error\":\"API endpoint not found\"}");
+      return;
+    }
+    
+    // Regular 404
+    server.send(404, "text/plain", "File not found: " + path);
+  });
+  
+  // API Endpoints
+  setupAPIRoutes();
+  
+  server.begin();
+  Serial.println("✅");
+}
+
+void serveFromSD(String path, String contentType) {
+  // Add CORS headers
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  
+  if (!systemState.sdCardMounted) {
+    if (path == "/index.html") {
+      // Simple fallback for main page only
+      server.send(200, "text/html", getSimpleFallback());
+    } else {
+      server.send(500, "text/plain", "SD card not available");
+    }
+    return;
+  }
+  
+  File file = SD.open(path);
+  if (!file) {
+    if (path == "/index.html") {
+      server.send(200, "text/html", getSimpleFallback());
+    } else {
+      server.send(404, "text/plain", "File not found: " + path);
+    }
+    return;
+  }
+  
+  server.streamFile(file, contentType);
+  file.close();
+}
+
+String getContentType(String filename) {
+  if (filename.endsWith(".html")) return "text/html";
+  else if (filename.endsWith(".css")) return "text/css";
+  else if (filename.endsWith(".js")) return "application/javascript";
+  else if (filename.endsWith(".json")) return "application/json";
+  else if (filename.endsWith(".png")) return "image/png";
+  else if (filename.endsWith(".jpg") || filename.endsWith(".jpeg")) return "image/jpeg";
+  else if (filename.endsWith(".gif")) return "image/gif";
+  else if (filename.endsWith(".ico")) return "image/x-icon";
+  else if (filename.endsWith(".svg")) return "image/svg+xml";
+  return "text/plain";
+}
+
+// SIMPLE fallback HTML - avoiding JavaScript parsing issues
+String getSimpleFallback() {
+  String html = "<!DOCTYPE html><html><head>";
+  html += "<title>ShowDuino Controller</title>";
+  html += "<meta name='viewport' content='width=device-width,initial-scale=1'>";
+  html += "<style>body{font-family:Arial;margin:20px;background:#222;color:white;}</style>";
+  html += "</head><body>";
+  html += "<h1>🎭 ShowDuino Controller</h1>";
+  html += "<p><strong>SD Card Required:</strong> Place your custom web files on SD card.</p>";
+  html += "<p>System Status:</p>";
+  html += "<p>WiFi: " + String(systemState.wifiConnected ? "Connected" : "Disconnected") + "</p>";
+  html += "<p>IP: " + systemState.ipAddress + "</p>";
+  html += "<p>SD Card: " + String(systemState.sdCardMounted ? "OK" : "Failed") + "</p>";
+  html += "<p>Mega: " + String(systemState.megaConnected ? "Connected" : "Disconnected") + "</p>";
+  html += "<p><a href='/api/status'>View JSON Status</a></p>";
+  html += "</body></html>";
+  return html;
+}
+
+// ================================================================================
+// API ROUTES - COMMAND MAP COMPATIBLE
+// ================================================================================
+
+void setupAPIRoutes() {
+  server.on("/api/status", HTTP_GET, handleAPIStatus);
+  server.on("/api/fx", HTTP_POST, handleAPICustomFX);
+  server.on("/api/fx/stop", HTTP_POST, handleAPIStopFX);
+  server.on("/api/relay", HTTP_POST, handleAPIRelay);
+  server.on("/api/dmx/channel", HTTP_POST, handleAPIDMXChannel);
+  server.on("/api/dmx/scene", HTTP_POST, handleAPIDMXScene);
+  server.on("/api/dmx/blackout", HTTP_POST, handleAPIDMXBlackout);
+  server.on("/api/scene/play", HTTP_POST, handleAPIScenePlay);
+  server.on("/api/scene/stop", HTTP_POST, handleAPISceneStop);
+  server.on("/api/mp3", HTTP_POST, handleAPIMP3);
+  server.on("/api/volume", HTTP_POST, handleAPIVolume);
+  server.on("/api/brightness", HTTP_POST, handleAPIBrightness);
+  server.on("/api/pixels", HTTP_POST, handleAPIPixels);
+  server.on("/api/trigger", HTTP_POST, handleAPITrigger);
+  server.on("/api/system", HTTP_POST, handleAPISystem);
+  server.on("/api/emergency", HTTP_POST, handleAPIEmergencyStop);
+  server.on("/api/health", HTTP_GET, handleAPIHealth);
+}
+
+void handleAPIStatus() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  
+  JsonDocument doc;
+  
+  // ESP32 Status
+  doc["esp32"]["wifi_connected"] = systemState.wifiConnected;
+  doc["esp32"]["ip_address"] = systemState.ipAddress;
+  doc["esp32"]["sd_card"] = systemState.sdCardMounted;
+  doc["esp32"]["uptime"] = millis() - systemState.bootTime;
+  doc["esp32"]["free_heap"] = ESP.getFreeHeap();
+  doc["esp32"]["temperature"] = temperatureRead();
+  
+  // Mega Status
+  doc["mega"]["connected"] = systemState.megaConnected;
+  if (megaStatus.dataValid) {
+    doc["mega"]["voltage_5v"] = megaStatus.voltage5V;
+    doc["mega"]["voltage_12v"] = megaStatus.voltage12V;
+    doc["mega"]["temperature"] = megaStatus.temperature;
+    doc["mega"]["active_fx"] = megaStatus.activeFX;
+    doc["mega"]["relay_states"] = megaStatus.relayStates;
+    doc["mega"]["scene_status"] = megaStatus.sceneStatus;
+  }
+  
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
+void handleAPICustomFX() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  
+  if (!systemState.megaConnected) {
+    server.send(503, "application/json", "{\"error\":\"Mega not connected\"}");
+    return;
+  }
+  
+  if (!server.hasArg("id")) {
+    server.send(400, "application/json", "{\"error\":\"Missing effect id\"}");
+    return;
+  }
+  
+  int effectID = server.arg("id").toInt();
+  int strip = server.hasArg("strip") ? server.arg("strip").toInt() : 0;
+  int start = server.hasArg("start") ? server.arg("start").toInt() : 0;
+  int count = server.hasArg("count") ? server.arg("count").toInt() : 50;
+  String color = server.hasArg("color") ? server.arg("color") : "FF0000";
+  int speed = server.hasArg("speed") ? server.arg("speed").toInt() : 50;
+  int brightness = server.hasArg("brightness") ? server.arg("brightness").toInt() : 255;
+  bool reverse = server.hasArg("reverse") ? (server.arg("reverse") == "true") : false;
+  int duration = server.hasArg("duration") ? server.arg("duration").toInt() : 0;
+  
+  // Use FX_ format that Mega expects
+  String command = "FX_" + String(effectID) + ":" + String(strip) + ":" + 
+                   String(start) + ":" + String(count) + ":" + color + ":" + 
+                   String(speed) + ":" + String(brightness) + ":" + String(reverse ? 1 : 0) + ":" + String(duration);
+  
+  sendCommandToMega(command);
+  
+  server.send(200, "application/json", "{\"success\":true,\"effect_id\":" + String(effectID) + "}");
+}
+
+void handleAPIStopFX() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  sendCommandToMega("STOP_SHOW");
+  server.send(200, "application/json", "{\"success\":true}");
+}
+
+void handleAPIRelay() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  
+  if (!server.hasArg("id") || !server.hasArg("state")) {
+    server.send(400, "application/json", "{\"error\":\"Missing relay id or state\"}");
+    return;
+  }
+  
+  int relayID = server.arg("id").toInt();
+  bool state = server.arg("state") == "true" || server.arg("state") == "1";
+  int duration = server.hasArg("duration") ? server.arg("duration").toInt() : 0;
+  
+  String command;
+  if (duration > 0) {
+    command = "PULSE_RELAY:" + String(relayID) + ":" + String(duration);
+  } else if (state) {
+    command = "RELAY_ON:" + String(relayID);
+  } else {
+    command = "RELAY_OFF:" + String(relayID);
+  }
+  
+  sendCommandToMega(command);
+  server.send(200, "application/json", "{\"success\":true}");
+}
+
+void handleAPIDMXChannel() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  
+  if (!server.hasArg("channel") || !server.hasArg("value")) {
+    server.send(400, "application/json", "{\"error\":\"Missing channel or value\"}");
+    return;
+  }
+  
+  int channel = server.arg("channel").toInt();
+  int value = server.arg("value").toInt();
+  
+  sendCommandToMega("DMX_CH:" + String(channel) + ":" + String(value));
+  server.send(200, "application/json", "{\"success\":true}");
+}
+
+void handleAPIDMXScene() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  
+  if (!server.hasArg("scene")) {
+    server.send(400, "application/json", "{\"error\":\"Missing scene number\"}");
+    return;
+  }
+  
+  sendCommandToMega("DMX_SCENE:" + server.arg("scene"));
+  server.send(200, "application/json", "{\"success\":true}");
+}
+
+void handleAPIDMXBlackout() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  sendCommandToMega("DMX_BLACKOUT");
+  server.send(200, "application/json", "{\"success\":true}");
+}
+
+void handleAPIScenePlay() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  
+  if (!server.hasArg("scene")) {
+    server.send(400, "application/json", "{\"error\":\"Missing scene name\"}");
+    return;
+  }
+  
+  String scene = server.arg("scene");
+  
+  // Check if it's a numeric scene (0-9) or named scene
+  if (scene.length() == 1 && scene.charAt(0) >= '0' && scene.charAt(0) <= '9') {
+    sendCommandToMega("SCENE_" + scene);
+  } else {
+    sendCommandToMega("SCENE_PLAY:" + scene);
+  }
+  
+  server.send(200, "application/json", "{\"success\":true}");
+}
+
+void handleAPISceneStop() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  sendCommandToMega("SCENE_STOP");
+  server.send(200, "application/json", "{\"success\":true}");
+}
+
+void handleAPIMP3() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  
+  if (!server.hasArg("player") || !server.hasArg("action")) {
+    server.send(400, "application/json", "{\"error\":\"Missing player or action\"}");
+    return;
+  }
+  
+  String player = server.arg("player");
+  String action = server.arg("action");
+  String playerSuffix = (player == "1" || player == "A") ? "A" : "B";
+  
+  String command;
+  if (action == "play" && server.hasArg("track")) {
+    command = "PLAY_MP3_" + playerSuffix + ":" + server.arg("track");
+  } else if (action == "stop") {
+    command = "STOP_MP3_" + playerSuffix;
+  } else if (action == "pause") {
+    command = "PAUSE_MP3_" + playerSuffix;
+  } else if (action == "resume") {
+    command = "RESUME_MP3_" + playerSuffix;
+  } else if (action == "next") {
+    command = "NEXT_MP3_" + playerSuffix;
+  } else if (action == "prev") {
+    command = "PREV_MP3_" + playerSuffix;
+  } else if (action == "volume" && server.hasArg("volume")) {
+    if (playerSuffix == "A") {
+      command = "SET_MP3_VOL:" + server.arg("volume");
+    } else {
+      command = "SET_MP3B_VOL:" + server.arg("volume");
+    }
+  } else {
+    server.send(400, "application/json", "{\"error\":\"Invalid MP3 command\"}");
+    return;
+  }
+  
+  sendCommandToMega(command);
+  server.send(200, "application/json", "{\"success\":true}");
+}
+
+void handleAPIVolume() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  
+  String action = server.hasArg("action") ? server.arg("action") : "";
+  
+  if (action == "up") {
+    sendCommandToMega("VOL_UP");
+  } else if (action == "down") {
+    sendCommandToMega("VOL_DOWN");
+  } else if (action == "mute") {
+    sendCommandToMega("VOL_MUTE");
+  } else if (action == "set" && server.hasArg("level")) {
+    sendCommandToMega("SET_VOLUME:" + server.arg("level"));
+  } else {
+    server.send(400, "application/json", "{\"error\":\"Invalid volume action\"}");
+    return;
+  }
+  
+  server.send(200, "application/json", "{\"success\":true}");
+}
+
+void handleAPIBrightness() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  
+  String action = server.hasArg("action") ? server.arg("action") : "";
+  
+  if (action == "up") {
+    sendCommandToMega("BRIGHT_UP");
+  } else if (action == "down") {
+    sendCommandToMega("BRIGHT_DOWN");
+  } else if (action == "set" && server.hasArg("level")) {
+    sendCommandToMega("SET_BRIGHTNESS:" + server.arg("level"));
+  } else {
+    server.send(400, "application/json", "{\"error\":\"Invalid brightness action\"}");
+    return;
+  }
+  
+  server.send(200, "application/json", "{\"success\":true}");
+}
+
+void handleAPIPixels() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  
+  String action = server.hasArg("action") ? server.arg("action") : "";
+  
+  if (action == "clear") {
+    sendCommandToMega("NEO_CLEAR");
+  } else if (action == "fill" && server.hasArg("color")) {
+    sendCommandToMega("NEO_FILL:" + server.arg("color"));
+  } else if (action == "all" && server.hasArg("color")) {
+    sendCommandToMega("PIXELS_ALL:" + server.arg("color"));
+  } else if (action == "line" && server.hasArg("strip") && server.hasArg("start") && 
+             server.hasArg("count") && server.hasArg("color")) {
+    String command = "PIXELS_LINE:" + server.arg("strip") + ":" + server.arg("start") + 
+                     ":" + server.arg("count") + ":" + server.arg("color");
+    sendCommandToMega(command);
+  } else {
+    server.send(400, "application/json", "{\"error\":\"Invalid pixel action or missing parameters\"}");
+    return;
+  }
+  
+  server.send(200, "application/json", "{\"success\":true}");
+}
+
+void handleAPITrigger() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  
+  if (!server.hasArg("id")) {
+    server.send(400, "application/json", "{\"error\":\"Missing trigger id\"}");
+    return;
+  }
+  
+  sendCommandToMega("TRIGGER_" + server.arg("id"));
+  server.send(200, "application/json", "{\"success\":true}");
+}
+
+void handleAPISystem() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  
+  String action = server.hasArg("action") ? server.arg("action") : "";
+  
+  if (action == "ping") {
+    sendCommandToMega("PING");
+  } else if (action == "voltage") {
+    sendCommandToMega("VOLTAGE_CHECK");
+  } else if (action == "power") {
+    sendCommandToMega("PWR_OK_STATUS");
+  } else if (action == "start") {
+    sendCommandToMega("START_SHOW");
+  } else if (action == "stop") {
+    sendCommandToMega("STOP_SHOW");
+  } else {
+    server.send(400, "application/json", "{\"error\":\"Invalid system action\"}");
+    return;
+  }
+  
+  server.send(200, "application/json", "{\"success\":true}");
+}
+
+void handleAPIEmergencyStop() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  sendCommandToMega("EMERGENCY_STOP");
+  server.send(200, "application/json", "{\"success\":true}");
+}
+
+void handleAPIHealth() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  
+  int health = calculateSystemHealth();
+  String status = health >= 80 ? "excellent" : health >= 60 ? "good" : health >= 40 ? "warning" : "critical";
+  
+  JsonDocument doc;
+  doc["health_score"] = health;
+  doc["status"] = status;
+  
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
+// ================================================================================
+// MEGA COMMUNICATION - COMMAND MAP COMPATIBLE
+// ================================================================================
+
+void handleMegaCommunication() {
+  while (SerialFromMega.available()) {
+    String message = SerialFromMega.readStringUntil('\n');
+    message.trim();
+    
+    if (message.length() > 0) {
+      systemState.lastMegaHeartbeat = millis();
+      systemState.megaConnected = true;
+      processMegaMessage(message);
+    }
+  }
+  
+  // Check timeout
+  if (millis() - systemState.lastMegaHeartbeat > 15000) {
+    if (systemState.megaConnected) {
+      systemState.megaConnected = false;
+      updateStatusLED(true, false, false); // Red
+    }
+  }
+}
+
+void processMegaMessage(String message) {
+  Serial.println("[Mega] " + message);
+  
+  if (message.startsWith("STATUS:")) {
+    parseMegaStatus(message);
+  } else if (message.startsWith("OK:")) {
+    // Command confirmed
+  } else if (message.startsWith("ERROR:")) {
+    systemState.currentError = message.substring(6);
+  }
+}
+
+void parseMegaStatus(String statusMsg) {
+  megaStatus.dataValid = true;
+  megaStatus.lastUpdate = millis();
+  
+  String data = statusMsg.substring(7);
+  
+  // Simple parsing - look for key=value pairs
+  int startIndex = 0;
+  while (startIndex < data.length()) {
+    int commaIndex = data.indexOf(',', startIndex);
+    if (commaIndex == -1) commaIndex = data.length();
+    
+    String field = data.substring(startIndex, commaIndex);
+    int equalIndex = field.indexOf('=');
+    
+    if (equalIndex != -1) {
+      String key = field.substring(0, equalIndex);
+      String value = field.substring(equalIndex + 1);
+      
+      if (key == "V5") megaStatus.voltage5V = value.toFloat();
+      else if (key == "V12") megaStatus.voltage12V = value.toFloat();
+      else if (key == "TEMP") megaStatus.temperature = value.toFloat();
+      else if (key == "FX") megaStatus.activeFX = value.toInt();
+      else if (key == "REL") megaStatus.relayStates = value;
+      else if (key == "SCENE") megaStatus.sceneStatus = value;
+    }
+    
+    startIndex = commaIndex + 1;
+  }
+}
+
+bool sendCommandToMega(String command) {
+  if (!systemState.megaConnected) {
+    perfMetrics.failedCommands++;
+    return false;
+  }
+  
+  SerialFromMega.println(command);
+  perfMetrics.totalCommands++;
+  
+  // Flash green LED
+  digitalWrite(CYD_LED_GREEN, LOW);
+  delay(50);
+  digitalWrite(CYD_LED_GREEN, HIGH);
+  
+  return true;
+}
+
+// ================================================================================
+// TOUCH SCREEN
+// ================================================================================
+
+void handleTouchScreen() {
+  if (millis() - lastTouchCheck < TOUCH_CHECK_INTERVAL) return;
+  lastTouchCheck = millis();
+  
+  if (!systemState.touchInitialized) return;
+  
+  bool currentlyPressed = (digitalRead(XPT2046_IRQ) == LOW);
+  
+  if (currentlyPressed && !touchPressed) {
+    touchPressed = true;
+    lastBacklightTouch = millis();
+    
+    // Wake backlight
+    if (!systemState.backlightOn) {
+      digitalWrite(BACKLIGHT_PIN, HIGH);
+      systemState.backlightOn = true;
+      Serial.println("[TOUCH] Backlight ON");
+      return;
+    }
+    
+    // Process touch - Simple page cycling on any touch
+    int screenX = 240; // Center of screen for visual feedback
+    int screenY = 160; // Center of screen for visual feedback
+    
+    // Touch feedback
+    tft.fillCircle(screenX, screenY, 8, COLOR_WARNING);
+    delay(100); // Brief delay for visual feedback
+    
+    // Cycle through pages
+    currentDisplayPage = (currentDisplayPage + 1) % 4;
+    lastDisplayUpdate = 0; // Force immediate update
+    
+    Serial.println("[TOUCH] Page changed to " + String(currentDisplayPage + 1));
+    
+  } else if (!currentlyPressed) {
+    touchPressed = false;
+  }
+  
+  // Backlight timeout
+  if (systemState.backlightOn && (millis() - lastBacklightTouch > BACKLIGHT_TIMEOUT)) {
+    digitalWrite(BACKLIGHT_PIN, LOW);
+    systemState.backlightOn = false;
+    Serial.println("[TOUCH] Backlight OFF (timeout)");
+  }
+}
+
+// ================================================================================
+// TFT DISPLAY
+// ================================================================================
+
+void updateTFTDisplay() {
+  if (millis() - lastDisplayUpdate < DISPLAY_UPDATE_INTERVAL) return;
+  
+  tft.fillScreen(COLOR_BG);
+  
+  // Header
+  tft.setTextColor(COLOR_HEADER, COLOR_BG);
+  tft.setTextSize(2);
+  tft.drawCentreString("ShowDuino v2.1", 240, 5, 2);
+  
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.drawString("Page " + String(currentDisplayPage + 1) + "/4", 10, 30);
+  tft.drawString("Touch to cycle", 300, 30);
+  
+  int y = 60;
+  
+  switch (currentDisplayPage) {
+    case 0: drawSystemPage(y); break;
+    case 1: drawMegaPage(y); break;
+    case 2: drawActivityPage(y); break;
+    case 3: drawPerformancePage(y); break;
+  }
+  
+  drawStatusBar();
+  lastDisplayUpdate = millis();
+}
+
+void drawSystemPage(int y) {
+  tft.setTextColor(COLOR_SUCCESS, COLOR_BG);
+  tft.drawString("System Status", 10, y);
+  y += 25;
+  
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  
+  // WiFi
+  tft.drawString("WiFi:", 10, y);
+  tft.setTextColor(systemState.wifiConnected ? COLOR_SUCCESS : COLOR_ERROR, COLOR_BG);
+  tft.drawString(systemState.wifiConnected ? "Connected" : "Disconnected", 80, y);
+  y += 20;
+  
+  // IP
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.drawString("IP: " + systemState.ipAddress, 10, y);
+  y += 20;
+  
+  // SD Card
+  tft.drawString("SD Card:", 10, y);
+  tft.setTextColor(systemState.sdCardMounted ? COLOR_SUCCESS : COLOR_ERROR, COLOR_BG);
+  tft.drawString(systemState.sdCardMounted ? "OK" : "Failed", 100, y);
+  y += 20;
+  
+  // Mega
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.drawString("Mega:", 10, y);
+  tft.setTextColor(systemState.megaConnected ? COLOR_SUCCESS : COLOR_ERROR, COLOR_BG);
+  tft.drawString(systemState.megaConnected ? "Connected" : "Disconnected", 80, y);
+  y += 25;
+  
+  // Memory
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  int freeHeap = ESP.getFreeHeap();
+  tft.drawString("Free Memory: " + String(freeHeap / 1024) + " KB", 10, y);
+  y += 20;
+  
+  // Temperature
+  float temp = temperatureRead();
+  tft.drawString("Temperature: " + String(temp, 1) + "C", 10, y);
+  y += 25;
+  
+  // Uptime
+  unsigned long uptime = (millis() - systemState.bootTime) / 1000;
+  tft.drawString("Uptime: " + formatUptime(uptime), 10, y);
+}
+
+void drawMegaPage(int y) {
+  if (!systemState.megaConnected || !megaStatus.dataValid) {
+    tft.setTextColor(COLOR_ERROR, COLOR_BG);
+    tft.setTextSize(2);
+    tft.drawCentreString("Mega Offline", 240, y + 50, 2);
+    return;
+  }
+  
+  tft.setTextColor(COLOR_SUCCESS, COLOR_BG);
+  tft.drawString("Mega Hardware", 10, y);
+  y += 25;
+  
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  
+  // Voltages
+  tft.drawString("5V: " + String(megaStatus.voltage5V, 2) + "V", 10, y);
+  bool v5ok = (megaStatus.voltage5V > 4.5 && megaStatus.voltage5V < 5.5);
+  tft.setTextColor(v5ok ? COLOR_SUCCESS : COLOR_ERROR, COLOR_BG);
+  tft.drawString(v5ok ? "OK" : "FAIL", 120, y);
+  y += 20;
+  
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.drawString("12V: " + String(megaStatus.voltage12V, 2) + "V", 10, y);
+  bool v12ok = (megaStatus.voltage12V > 11.0 && megaStatus.voltage12V < 13.0);
+  tft.setTextColor(v12ok ? COLOR_SUCCESS : COLOR_ERROR, COLOR_BG);
+  tft.drawString(v12ok ? "OK" : "FAIL", 120, y);
+  y += 25;
+  
+  // Environment
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.drawString("Temperature: " + String(megaStatus.temperature, 1) + "C", 10, y);
+  y += 20;
+  
+  // Active systems
+  tft.drawString("Active FX: " + String(megaStatus.activeFX), 10, y);
+  y += 20;
+  
+  // Relays
+  tft.drawString("Relays: " + megaStatus.relayStates, 10, y);
+  y += 20;
+  
+  // Draw relay status boxes
+  for (int i = 0; i < 8; i++) {
+    int x = 20 + (i * 35);
+    bool relayOn = megaStatus.relayStates.charAt(i) == '1';
+    
+    tft.fillRect(x, y, 30, 20, relayOn ? COLOR_SUCCESS : COLOR_INACTIVE);
+    tft.setTextColor(COLOR_BG, relayOn ? COLOR_SUCCESS : COLOR_INACTIVE);
+    tft.drawCentreString(String(i + 1), x + 15, y + 5, 1);
+  }
+}
+
+void drawActivityPage(int y) {
+  tft.setTextColor(COLOR_SUCCESS, COLOR_BG);
+  tft.drawString("Activity Monitor", 10, y);
+  y += 25;
+  
+  if (systemState.megaConnected && megaStatus.dataValid) {
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+    
+    tft.drawString("Commands: " + String(megaStatus.commandsProcessed), 10, y);
+    y += 20;
+    
+    tft.drawString("Errors: " + String(megaStatus.commandErrors), 10, y);
+    y += 20;
+    
+    tft.drawString("Active Effects: " + String(megaStatus.activeFX), 10, y);
+    y += 25;
+    
+    // Scene status
+    if (megaStatus.sceneStatus == "P") {
+      tft.setTextColor(COLOR_SUCCESS, COLOR_BG);
+      tft.drawString("Scene: Playing", 10, y);
+    } else {
+      tft.setTextColor(COLOR_INACTIVE, COLOR_BG);
+      tft.drawString("Scene: Stopped", 10, y);
+    }
+  } else {
+    tft.setTextColor(COLOR_ERROR, COLOR_BG);
+    tft.drawCentreString("No Activity Data", 240, y + 50, 2);
+  }
+}
+
+void drawPerformancePage(int y) {
+  tft.setTextColor(COLOR_WARNING, COLOR_BG);
+  tft.drawString("Performance", 10, y);
+  y += 25;
+  
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  
+  // Loop performance
+  tft.drawString("Loop Rate: " + String(perfMetrics.loopsPerSecond, 1) + "/sec", 10, y);
+  y += 20;
+  
+  tft.drawString("Max Loop: " + String(perfMetrics.maxLoopTime) + "ms", 10, y);
+  y += 20;
+  
+  // Communication
+  tft.drawString("Commands: " + String(perfMetrics.totalCommands), 10, y);
+  y += 20;
+  
+  tft.drawString("Failed: " + String(perfMetrics.failedCommands), 10, y);
+  y += 25;
+  
+  // Health score
+  int health = calculateSystemHealth();
+  tft.drawString("Health: " + String(health) + "/100", 10, y);
+  
+  uint16_t healthColor = health >= 80 ? COLOR_SUCCESS : 
+                        health >= 60 ? COLOR_WARNING : COLOR_ERROR;
+  tft.setTextColor(healthColor, COLOR_BG);
+  String healthStatus = health >= 80 ? "Excellent" : 
+                       health >= 60 ? "Good" : "Poor";
+  tft.drawString("(" + healthStatus + ")", 150, y);
+}
+
+void drawStatusBar() {
+  int y = 305;
+  tft.drawLine(0, y, 480, y, COLOR_TEXT);
+  
+  tft.setTextColor(COLOR_INACTIVE, COLOR_BG);
+  tft.setTextSize(1);
+  
+  // Uptime
+  unsigned long uptime = (millis() - systemState.bootTime) / 1000;
+  tft.drawString("Up:" + formatUptime(uptime), 5, y + 2);
+  
+  // Performance
+  tft.drawString(String(perfMetrics.loopsPerSecond, 0) + "lps", 100, y + 2);
+  
+  // Connection indicators
+  tft.fillCircle(250, y + 7, 4, systemState.wifiConnected ? COLOR_SUCCESS : COLOR_ERROR);
+  tft.fillCircle(270, y + 7, 4, systemState.megaConnected ? COLOR_SUCCESS : COLOR_ERROR);
+  tft.fillCircle(290, y + 7, 4, systemState.sdCardMounted ? COLOR_SUCCESS : COLOR_ERROR);
+  
+  tft.drawString("W M S", 242, y + 1);
+}
+
+// ================================================================================
+// UTILITY FUNCTIONS
+// ================================================================================
+
+void updateStatusLED(bool red, bool green, bool blue) {
+  digitalWrite(CYD_LED_RED, red);
+  digitalWrite(CYD_LED_GREEN, green);
+  digitalWrite(CYD_LED_BLUE, blue);
+}
+
+void updateNeoPixelStatus() {
+  static unsigned long lastUpdate = 0;
+  if (millis() - lastUpdate < 1000) return;
+  lastUpdate = millis();
+  
+  uint32_t statusColor;
+  
+  if (!systemState.wifiConnected && !systemState.megaConnected) {
+    statusColor = logoStrip.Color(100, 0, 0); // Red
+  } else if (!systemState.wifiConnected || !systemState.megaConnected) {
+    statusColor = logoStrip.Color(100, 50, 0); // Orange
+  } else if (systemState.currentError != "") {
+    statusColor = logoStrip.Color(100, 100, 0); // Yellow
+  } else {
+    statusColor = logoStrip.Color(0, 30, 0); // Green
+  }
+  
+  logoStrip.fill(statusColor);
+  logoStrip.show();
+}
+
+void updateSystemStatusLEDs() {
+  static unsigned long lastLEDUpdate = 0;
+  if (millis() - lastLEDUpdate < 2000) return;
+  lastLEDUpdate = millis();
+  
+  if (!systemState.wifiConnected && !systemState.megaConnected) {
+    updateStatusLED(true, false, false); // Red
+  } else if (!systemState.wifiConnected || !systemState.megaConnected) {
+    updateStatusLED(true, true, false); // Yellow
+  } else if (systemState.currentError != "") {
+    updateStatusLED(false, true, true); // Cyan
+  } else {
+    updateStatusLED(false, true, false); // Green
+  }
+}
+
+String formatUptime(unsigned long seconds) {
+  if (seconds < 60) return String(seconds) + "s";
+  if (seconds < 3600) return String(seconds / 60) + "m";
+  if (seconds < 86400) return String(seconds / 3600) + "h";
+  return String(seconds / 86400) + "d";
+}
+
+int calculateSystemHealth() {
+  int score = 100;
+  
+  if (!systemState.wifiConnected) score -= 20;
+  if (!systemState.sdCardMounted) score -= 15;
+  if (!systemState.megaConnected) score -= 25;
+  if (!systemState.touchInitialized) score -= 5;
+  
+  // Memory usage
+  int memUsage = ((ESP.getHeapSize() - ESP.getFreeHeap()) * 100) / ESP.getHeapSize();
+  if (memUsage > 80) score -= 15;
+  else if (memUsage > 60) score -= 8;
+  
+  // Performance
+  if (perfMetrics.loopsPerSecond < 50) score -= 10;
+  else if (perfMetrics.loopsPerSecond < 100) score -= 5;
+  
+  return max(0, score);
+}
+
+void updatePerformanceMetrics() {
+  unsigned long currentTime = millis();
+  unsigned long loopTime = currentTime - perfMetrics.lastLoopTime;
+  
+  perfMetrics.loopCount++;
+  perfMetrics.lastLoopTime = currentTime;
+  
+  if (loopTime > perfMetrics.maxLoopTime) {
+    perfMetrics.maxLoopTime = loopTime;
+  }
+  
+  // Update every 5 seconds
+  if (currentTime - perfMetrics.lastMetricTime >= 5000) {
+    perfMetrics.loopsPerSecond = perfMetrics.loopCount / 5.0;
+    perfMetrics.loopCount = 0;
+    perfMetrics.lastMetricTime = currentTime;
+    perfMetrics.maxLoopTime = 0;
+  }
+}
+
+void displaySystemStatus() {
+  Serial.println("\n📊 SYSTEM STATUS:");
+  Serial.println("  WiFi: " + String(systemState.wifiConnected ? "✅" : "❌"));
+  Serial.println("  IP: " + systemState.ipAddress);
+  Serial.println("  SD Card: " + String(systemState.sdCardMounted ? "✅" : "❌"));
+  Serial.println("  Touch: " + String(systemState.touchInitialized ? "✅" : "❌"));
+  Serial.println("  Mega: " + String(systemState.megaConnected ? "✅" : "❌"));
+  Serial.println("  Health: " + String(calculateSystemHealth()) + "/100");
+}
+
+void checkWiFiConnection() {
+  if (millis() - lastWiFiCheck < WIFI_CHECK_INTERVAL) return;
+  
+  if (!systemState.apMode && WiFi.status() != WL_CONNECTED) {
+    systemState.wifiConnected = false;
+    WiFi.reconnect();
+    delay(5000);
+    
+    if (WiFi.status() == WL_CONNECTED) {
+      systemState.wifiConnected = true;
+      systemState.ipAddress = WiFi.localIP().toString();
+    }
+  }
+  
+  lastWiFiCheck = millis();
+}
+
+// ================================================================================
+// MAIN LOOP
+// ================================================================================
+
+void loop() {
+  unsigned long loopStart = millis();
+  
+  // Core functions
+  server.handleClient();
+  handleMegaCommunication();
+  updateTFTDisplay();
+  handleTouchScreen();
+  
+  // Status updates
+  updateNeoPixelStatus();
+  updateSystemStatusLEDs();
+  checkWiFiConnection();
+  updatePerformanceMetrics();
+  
+  // Watchdog
+  if (millis() - loopStart > 1000) {
+    Serial.println("[WARNING] Loop timeout: " + String(millis() - loopStart) + "ms");
+  }
+  
+  delay(5);
+}
