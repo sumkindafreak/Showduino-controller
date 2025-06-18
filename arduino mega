@@ -1,575 +1,1937 @@
-#include <Wire.h>
-#include <SparkFunSX1509.h>
-#include <Arduino.h>
 #include <Adafruit_NeoPixel.h>
-#include "Adafruit-NECremote44.h"
-#include <RTClib.h>
+#include <SoftwareSerial.h>
+#include <Wire.h>
 #include <DHT.h>
-#include <CuteBuzzerSounds.h>
+#include <DmxSimple.h>
+#include <SPI.h>
+#include <RTClib.h>
+#include <SparkFunSX1509.h>
 #include "custom_neopixel_fx.h"
 
+// ================================================================================
+// HARDWARE CONFIGURATION
+// ================================================================================
 
-#define PIXEL_COUNT 24
-#define NUM_RELAYS 8
-#define NUM_PIXEL_LINES 4
-
-// Pin Assignments for diagnostics
-
-#define PWR_OK_PIN A4     // Gray wire (Power Good Signal)
-#define VOLTAGE_12V A5    // Yellow wire (12V) - DISABLED UNTIL SENSOR ARRIVES
-#define VOLTAGE_5V A1     // Red wire (5V) - Direct Connection
-#define VOLTAGE_3V3 A2    // Orange wire (3.3V) - Direct Connection
-#define STANDBY_POWER A3  // Purple wire (5VSB - Standby Power)
-
-#define BUZZER_PIN 47
-
+// RTC
 RTC_DS1307 rtc;
 
-
-// ===== Voltage Thresholds =====
-const float THRESHOLD_5V = 4.7;
-const float THRESHOLD_3V3 = 3.1;
-const float THRESHOLD_5VSB = 4.7;
-const float THRESHOLD_PWR_OK = 4.5;
-const float THRESHOLD_12V = 11.5;
-float voltageMultiplier = 5.0 * (25.0 / 5.0) / 1023.0;  // Already correct for the module
-
-#define DHTPIN 48      // DHT11 data pin
-#define DHTTYPE DHT11  // Sensor type
-
-DHT dht(DHTPIN, DHTTYPE);
-unsigned long lastDHTLog = 0;
-const unsigned long DHT_INTERVAL = 20000;  // 40 seconds
-
-
-
-
-
-const int START_BTN_PIN = 6;
-const int RESET_BTN_PIN = 7;
-const int STOP_BTN_PIN = 8;
-
-bool lastStartState = HIGH;
-bool lastResetState = HIGH;
-bool lastStopState = HIGH;
-
-const unsigned long btnDebounce = 50;
-unsigned long lastBtnTime = 0;
-
+// SX1509 Scene Selection (0-9 scenes)
 SX1509 io;
-#define SX_ADDR 0x3E
-// Remap SX1509 pin index [0–9] to the actual scene button number
-const byte sxSceneButtons[16] = {
-  0,   // Pin 0 → Button 0
-  7,   // Pin 1 → Button 1
-  8,   // Pin 2 → Button 2
-  9,   // Pin 3 → Button 3
-  4,   // Pin 4 → Button 4
-  5,   // Pin 5 → Button 5
-  6,   // Pin 6 → Button 6
-  1,   // Pin 7 → Button 7
-  2,   // Pin 8 → Button 8
-  3,   // Pin 9 → Button 9
-  10,  // Pin 10 → input 10
-  11,  // Pin 11 → input 11
-  12,  // Pin 12 → input 12
-  13,  // Pin 13 → input 13
-  14,  // Pin 14 → input 14
-  15,  // Pin 15 → input 15
+const uint8_t SX1509_ADDRESS = 0x3E;
+const int sceneButtons = 10;
+
+// NeoPixel Configuration - Enhanced with original Showduino naming
+#define NUM_STRIPS 4
+#define NUM_LEDS_PER_STRIP 50
+
+// Original Showduino strip definitions
+#define MACHINE_PIN 22
+#define TIME_DISPLAY_PIN 23
+#define CANDLES_PIN 24
+#define TIME_CIRCUITS_PIN 25
+
+#define NUM_MACHINE 100
+#define NUM_TIME_DISPLAY 100
+#define NUM_CANDLES 9
+#define NUM_TIME_CIRCUITS 100
+
+// Relay Configuration
+#define NUM_RELAYS 8
+#define RELAY_5V_START 26
+#define RELAY_12V_START 30
+
+// MP3 Player Configuration
+#define MP3_1_RX 10
+#define MP3_1_TX 11
+#define MP3_2_RX 12
+#define MP3_2_TX 13
+
+// DMX Configuration
+#define DMX_OUTPUT_PIN 2
+#define DMX_CHANNELS 512
+#define DMX_UPDATE_RATE 44
+#define MAX_FIXTURES 50
+
+// Sensor Configuration
+#define DHT_PIN 38
+#define DHT_TYPE DHT11
+#define VOLTAGE_5V_PIN A1
+#define VOLTAGE_12V_PIN A2
+#define VOLTAGE_3V3_PIN A3
+#define POWER_OK_PIN A4
+#define STANDBY_POWER_PIN A5
+
+// Button Configuration
+#define START_BUTTON 6
+#define EMERGENCY_STOP 8
+#define RESET_BUTTON 7
+#define FAN_BUTTON 5
+
+// Extra programmable buttons
+#define ONESHOT1 40
+#define ONESHOT2 41
+#define ONESHOT3 42
+#define ONESHOT4 43
+#define ONESHOT5 44
+#define EXTRA_BUTTON_6 45
+#define EXTRA_BUTTON_7 46
+#define EXTRA_BUTTON_8 48
+#define EXTRA_BUTTON_9 49
+#define EXTRA_BUTTON_10 50
+#define EXTRA_BUTTON_11 51
+#define EXTRA_BUTTON_12 52
+#define EXTRA_BUTTON_13 53
+
+// Buzzer
+#define BUZZER_PIN 47
+
+// ESP32 Communication
+#define ESP32_HEARTBEAT_INTERVAL 2000
+#define ESP32_TIMEOUT 10000
+
+// ================================================================================
+// GLOBAL OBJECTS AND VARIABLES
+// ================================================================================
+
+// Enhanced System State Structure
+struct ShowduinoState {
+  bool machineStarted;
+  bool emergencyStopActive;
+  bool esp32Connected;
+  bool relayStates[8];
+  bool sceneActive[10];
+  int currentScene;
+  bool waiting;
+  bool isShocking;
+  bool isTravelling;
+  bool isGlitching;
+  bool circuitFlicker;
+  float temperature;
+  float humidity;
+  float voltage12V;
+  float voltage5V;
+  float voltage3V3;
+  bool powerOK;
+  unsigned long startMillis;
+  unsigned long uptime;
+  unsigned long commandsProcessed;
+  unsigned long commandErrors;
+  uint8_t brightness;
+  uint8_t volume;
+} showduinoState;
+
+// Enhanced Effect Management
+struct ActiveEffect {
+  bool running;
+  uint8_t fxID;
+  uint8_t strip;
+  uint16_t startLED;
+  uint16_t count;
+  uint32_t color;
+  uint8_t speed;
+  uint8_t brightness;
+  unsigned long startTime;
+  unsigned long lastUpdate;
+  uint16_t currentFrame;
+  uint16_t totalFrames;
+  bool reverse;
+  bool useCustomFX;
+  unsigned long effectDuration;
 };
+ActiveEffect activeEffects[4];
 
-
-const int numSceneButtons = sizeof(sxSceneButtons) / sizeof(sxSceneButtons[0]);
-bool sxPrevState[16] = { HIGH };  // Fills all to HIGH
-
-
-// --- NeoPixels (D22–D25)
-const int pixelPins[NUM_PIXEL_LINES] = { 22, 23, 24, 25 };
-Adafruit_NeoPixel pixels[NUM_PIXEL_LINES] = {
-  Adafruit_NeoPixel(PIXEL_COUNT, 22, NEO_GRB + NEO_KHZ800),
-  Adafruit_NeoPixel(PIXEL_COUNT, 23, NEO_GRB + NEO_KHZ800),
-  Adafruit_NeoPixel(PIXEL_COUNT, 24, NEO_GRB + NEO_KHZ800),
-  Adafruit_NeoPixel(PIXEL_COUNT, 25, NEO_GRB + NEO_KHZ800)
+// DMX System
+struct DMXFixture {
+  uint16_t startChannel;
+  uint8_t channelCount;
+  String fixtureType;
+  String fixtureName;
+  bool active;
 };
+DMXFixture fixtures[MAX_FIXTURES];
+uint8_t dmxData[DMX_CHANNELS + 1];
+uint8_t fixtureCount = 0;
 
-// --- Relays (D26–D33)
-const int relayPins[NUM_RELAYS] = { 26, 27, 28, 29, 30, 31, 32, 33 };
-bool relayStates[NUM_RELAYS];
-
-bool relayUseTimer[NUM_RELAYS] = { false, false, false, false, false, false, false, false };
-unsigned long relayTimers[NUM_RELAYS] = { 0 };
-const unsigned long relayDuration = 3000;  // 3 seconds
-
-
-#define NUM_BUTTONS 12  // Previously 8
-
-
-const int buttonPins[NUM_BUTTONS] = {
-  40, 41, 42, 43, 44, 45, 34, 35,  // Buttons 0–7 → Relays 1–7
-  36, 37, 38, 39                   // Buttons 8–11 → A, B, C, Relay 8
+// MP3 Player States
+struct MP3State {
+  bool playing;
+  uint16_t currentTrack;
+  uint8_t volume;
 };
+MP3State mp3States[2];
 
-bool buttonStates[NUM_BUTTONS] = { HIGH };  // Auto fills all HIGHs
-unsigned long lastDebounceTime[NUM_BUTTONS] = { 0 };
-const unsigned long debounceDelay = 50;
+// Scene Player State
+struct ScenePlayerState {
+  bool playing;
+  String currentScene;
+  unsigned long sceneStartTime;
+} scenePlayer;
 
-// --- IR Remote on Pin 46
-const byte irPin = 46;
-Adafruit_NECremote remote(irPin);
+// NeoPixel strips - Using original Showduino configuration
+Adafruit_NeoPixel machine(NUM_MACHINE, MACHINE_PIN, NEO_GRB + NEO_KHZ800);
+Adafruit_NeoPixel time_display(NUM_TIME_DISPLAY, TIME_DISPLAY_PIN, NEO_GRB + NEO_KHZ800);
+Adafruit_NeoPixel candles(NUM_CANDLES, CANDLES_PIN, NEO_GRB + NEO_KHZ800);
+Adafruit_NeoPixel time_circuits(NUM_TIME_CIRCUITS, TIME_CIRCUITS_PIN, NEO_GRB + NEO_KHZ800);
 
-// Hex codes for IR buttons
-const byte buttonCode[44] = {
-  0x5C, 0x5D, 0x41, 0x40, 0x58, 0x59, 0x45, 0x44,
-  0x54, 0x55, 0x49, 0x48, 0x50, 0x51, 0x4D, 0x4C,
-  0x1C, 0x1D, 0x1E, 0x1F, 0x18, 0x19, 0x1A, 0x1B,
-  0x14, 0x15, 0x16, 0x17, 0x10, 0x11, 0x12, 0x13,
-  0x0C, 0x0D, 0x0E, 0x0F, 0x08, 0x09, 0x0A, 0x0B,
-  0x04, 0x05, 0x06, 0x07
-};
+// Array for easier access
+Adafruit_NeoPixel* strips[4] = {&machine, &time_display, &candles, &time_circuits};
 
-// Readable labels for each button
-const char* irLabels[44] = {
-  "1", "2", "3", "4",
-  "5", "6", "7", "8",
-  "9", "0", "*", "#",
-  "A", "B", "C", "D",
-  "E", "F", "G", "H",
-  "I", "J", "K", "L",
-  "M", "N", "O", "P",
-  "Q", "R", "S", "T",
-  "U", "V", "W", "X",
-  "Y", "Z", "RED", "GREEN",
-  "BLUE", "YELLOW", "UP", "DOWN"
-};
+// MP3 Players
+SoftwareSerial mp3Player1(MP3_1_RX, MP3_1_TX);
+SoftwareSerial mp3Player2(MP3_2_RX, MP3_2_TX);
 
+// Temperature sensor
+DHT dht(DHT_PIN, DHT_TYPE);
 
-bool sceneRunning = false;
-void checkControlButtons() {
-  if (millis() - lastBtnTime < btnDebounce) return;
+// Timing variables
+unsigned long lastHeartbeat = 0;
+unsigned long lastStatusUpdate = 0;
+unsigned long lastTempCheck = 0;
+unsigned long lastESP32Message = 0;
+unsigned long systemStartTime = 0;
 
-  bool startState = digitalRead(START_BTN_PIN);
-  bool resetState = digitalRead(RESET_BTN_PIN);
-  bool stopState = digitalRead(STOP_BTN_PIN);
+// Visual effect timing
+unsigned long previousMillis = 0;
+unsigned long interval = random(50, 200);
+int twinkleTimer = random(100, 2000);
+int flickerTimer = random(600, 1200);
+int electricTimer = random(600, 1200);
+int flickerSpeed = 400;
 
-  // START button toggles scene on/off
-  if (startState == LOW && lastStartState == HIGH) {
-    sceneRunning = !sceneRunning;
-    if (sceneRunning) {
-      Serial.println("[BTN] START pressed → Scene STARTED");
-      // Add start scene logic here
-    } else {
-      Serial.println("[BTN] START pressed → Scene STOPPED");
-      // Add stop scene logic here
+// Voltage monitoring
+float voltageMultiplier = 5.0 * (25.0 / 5.0) / 1023.0;
+
+// Communication intervals
+const unsigned long HEARTBEAT_INTERVAL = 1000;
+const unsigned long STATUS_UPDATE_INTERVAL = 5000;
+const unsigned long TEMP_CHECK_INTERVAL = 2000;
+
+// ================================================================================
+// ESP32 COMMUNICATION PROTOCOL
+// ================================================================================
+
+void handleESP32Communication() {
+  if (Serial1.available()) {
+    String command = Serial1.readStringUntil('\n');
+    command.trim();
+    
+    if (command.length() > 0) {
+      lastESP32Message = millis();
+      showduinoState.esp32Connected = true;
+      parseESP32Command(command);
     }
-    lastBtnTime = millis();
   }
-
-  // EMERGENCY STOP
-  if (stopState == LOW && lastStopState == HIGH) {
-    Serial.println("[BTN] EMERGENCY STOP triggered");
-    sceneRunning = false;
-    // Add emergency stop logic here (turn off everything NOW)
-    lastBtnTime = millis();
+  
+  // Send periodic heartbeat to ESP32
+  if (millis() - lastHeartbeat > ESP32_HEARTBEAT_INTERVAL) {
+    Serial1.println("HEARTBEAT");
+    lastHeartbeat = millis();
   }
-
-  // RESET
-  if (resetState == LOW && lastResetState == HIGH) {
-    Serial.println("[BTN] RESET pressed");
-    sceneRunning = false;
-    // Add reset logic here
-    lastBtnTime = millis();
+  
+  // Check ESP32 connection timeout
+  if (millis() - lastESP32Message > ESP32_TIMEOUT) {
+    if (showduinoState.esp32Connected) {
+      showduinoState.esp32Connected = false;
+      Serial.println(F("[MEGA] ESP32 connection lost"));
+    }
   }
-
-  lastStartState = startState;
-  lastResetState = resetState;
-  lastStopState = stopState;
+  
+  // Send status updates
+  if (millis() - lastStatusUpdate > STATUS_UPDATE_INTERVAL) {
+    sendStatusUpdate();
+    lastStatusUpdate = millis();
+  }
 }
 
-
-
-
-
-void setupRTC() {
-  Wire.begin();
-
-  if (!rtc.begin()) {
-    Serial.println("[RTC] Couldn't find DS1307. Check wiring.");
-    // while (1);  // halt
+void parseESP32Command(String command) {
+  Serial.println("[MEGA] Received: " + command);
+  showduinoState.commandsProcessed++;
+  
+  bool commandProcessed = false;
+  
+  // RELAY Commands
+  if (command.startsWith("RELAY_ON:") || command.startsWith("RELAY:")) {
+    commandProcessed = handleRelayOnCommand(command);
   }
-
-  if (!rtc.isrunning()) {
-    Serial.println("[RTC] Clock is NOT running. Setting to compile time.");
-    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  else if (command.startsWith("RELAY_OFF:")) {
+    commandProcessed = handleRelayOffCommand(command);
   }
-
-  Serial.println("[RTC] DS1307 Initialized.");
+  else if (command.startsWith("PULSE_RELAY:")) {
+    commandProcessed = handlePulseRelayCommand(command);
+  }
+  
+  // MP3 Player A Commands
+  else if (command.startsWith("PLAY_MP3_A:")) {
+    commandProcessed = handlePlayMP3A(command);
+  }
+  else if (command == "STOP_MP3_A") {
+    stopMP3Player(1);
+    Serial1.println("OK:STOP_MP3_A");
+    commandProcessed = true;
+  }
+  else if (command == "PAUSE_MP3_A") {
+    pauseMP3Player(1);
+    Serial1.println("OK:PAUSE_MP3_A");
+    commandProcessed = true;
+  }
+  else if (command == "RESUME_MP3_A") {
+    resumeMP3Player(1);
+    Serial1.println("OK:RESUME_MP3_A");
+    commandProcessed = true;
+  }
+  else if (command == "NEXT_MP3_A") {
+    nextMP3Track(1);
+    Serial1.println("OK:NEXT_MP3_A");
+    commandProcessed = true;
+  }
+  else if (command == "PREV_MP3_A") {
+    prevMP3Track(1);
+    Serial1.println("OK:PREV_MP3_A");
+    commandProcessed = true;
+  }
+  
+  // MP3 Player B Commands
+  else if (command.startsWith("PLAY_MP3_B:")) {
+    commandProcessed = handlePlayMP3B(command);
+  }
+  else if (command == "STOP_MP3_B") {
+    stopMP3Player(2);
+    Serial1.println("OK:STOP_MP3_B");
+    commandProcessed = true;
+  }
+  else if (command == "PAUSE_MP3_B") {
+    pauseMP3Player(2);
+    Serial1.println("OK:PAUSE_MP3_B");
+    commandProcessed = true;
+  }
+  else if (command == "RESUME_MP3_B") {
+    resumeMP3Player(2);
+    Serial1.println("OK:RESUME_MP3_B");
+    commandProcessed = true;
+  }
+  else if (command == "NEXT_MP3_B") {
+    nextMP3Track(2);
+    Serial1.println("OK:NEXT_MP3_B");
+    commandProcessed = true;
+  }
+  else if (command == "PREV_MP3_B") {
+    prevMP3Track(2);
+    Serial1.println("OK:PREV_MP3_B");
+    commandProcessed = true;
+  }
+  
+  // Volume Commands
+  else if (command.startsWith("SET_MP3_VOL:")) {
+    commandProcessed = handleSetMP3Volume(command, 1);
+  }
+  else if (command.startsWith("SET_MP3B_VOL:")) {
+    commandProcessed = handleSetMP3Volume(command, 2);
+  }
+  else if (command.startsWith("SET_VOLUME:")) {
+    commandProcessed = handleSetVolume(command);
+  }
+  else if (command.startsWith("VOL_")) {
+    commandProcessed = handleVolCommand(command);
+  }
+  
+  // Pixel Commands
+  else if (command.startsWith("PIXELS_LINE:")) {
+    commandProcessed = handlePixelsLine(command);
+  }
+  else if (command.startsWith("PIXELS_ALL:")) {
+    commandProcessed = handlePixelsAll(command);
+  }
+  else if (command.startsWith("NEO_")) {
+    commandProcessed = handleNeoCommand(command);
+  }
+  
+  // Brightness Commands
+  else if (command.startsWith("SET_BRIGHTNESS:")) {
+    commandProcessed = handleSetBrightness(command);
+  }
+  else if (command.startsWith("BRIGHT_")) {
+    commandProcessed = handleBrightCommand(command);
+  }
+  
+  // Show Commands
+  else if (command == "START_SHOW") {
+    startMachine();
+    Serial1.println("OK:START_SHOW");
+    commandProcessed = true;
+  }
+  else if (command == "STOP_SHOW") {
+    stopAllEffects();
+    Serial1.println("OK:STOP_SHOW");
+    commandProcessed = true;
+  }
+  
+  // Trigger Commands
+  else if (command.startsWith("TRIGGER_")) {
+    commandProcessed = handleTriggerCommand(command);
+  }
+  
+  // Scene Commands
+  else if (command.startsWith("SCENE_")) {
+    commandProcessed = handleSceneCommand(command);
+  }
+  
+  // FX Commands
+  else if (command.startsWith("FX_")) {
+    commandProcessed = handleFXCommand(command);
+  }
+  
+  // DMX Commands
+  else if (command.startsWith("DMX_")) {
+    commandProcessed = handleDMXCommand(command);
+  }
+  
+  // System Commands
+  else if (command == "PING") {
+    Serial1.println("PONG");
+    commandProcessed = true;
+  }
+  else if (command == "VOLTAGE_CHECK") {
+    sendVoltageStatus();
+    commandProcessed = true;
+  }
+  else if (command == "PWR_OK_STATUS") {
+    Serial1.println("PWR_OK:" + String(digitalRead(POWER_OK_PIN) ? "TRUE" : "FALSE"));
+    commandProcessed = true;
+  }
+  
+  // Debug Commands
+  else if (command.startsWith("DEBUG_")) {
+    commandProcessed = handleDebugCommand(command);
+  }
+  
+  // Config Commands
+  else if (command.startsWith("CONFIG_")) {
+    commandProcessed = handleConfigCommand(command);
+  }
+  
+  // Timeline Commands
+  else if (command.startsWith("TIMELINE_")) {
+    commandProcessed = handleTimelineCommand(command);
+  }
+  
+  // Authentication Commands
+  else if (command.startsWith("AUTH_")) {
+    commandProcessed = handleAuthCommand(command);
+  }
+  
+  // Set Commands
+  else if (command.startsWith("SET_")) {
+    commandProcessed = handleSetCommand(command);
+  }
+  
+  // Clear Commands
+  else if (command.startsWith("CLEAR_")) {
+    commandProcessed = handleClearCommand(command);
+  }
+  
+  // Show Commands
+  else if (command.startsWith("SHOW_")) {
+    commandProcessed = handleShowCommand(command);
+  }
+  
+  // Save/Load Commands
+  else if (command.startsWith("SAVE_")) {
+    commandProcessed = handleSaveCommand(command);
+  }
+  else if (command.startsWith("LOAD_")) {
+    commandProcessed = handleLoadCommand(command);
+  }
+  
+  // Connect/Lock Commands
+  else if (command.startsWith("CONNECT_")) {
+    commandProcessed = handleConnectCommand(command);
+  }
+  else if (command.startsWith("LOCK_")) {
+    commandProcessed = handleLockCommand(command);
+  }
+  else if (command.startsWith("UNLOCK_")) {
+    commandProcessed = handleUnlockCommand(command);
+  }
+  
+  // WiFi/SD Commands
+  else if (command.startsWith("WIFI_")) {
+    commandProcessed = handleWiFiCommand(command);
+  }
+  else if (command.startsWith("SD_")) {
+    commandProcessed = handleSDCommand(command);
+  }
+  
+  // Prop/Diag Commands
+  else if (command.startsWith("PROP_")) {
+    commandProcessed = handlePropCommand(command);
+  }
+  else if (command.startsWith("DIAG_")) {
+    commandProcessed = handleDiagCommand(command);
+  }
+  
+  if (!commandProcessed) {
+    showduinoState.commandErrors++;
+    Serial.println("[MEGA] Unknown command: " + command);
+    Serial1.println("ERROR:UNKNOWN_COMMAND:" + command);
+  }
 }
 
-void sendToESP(const String& message) {
-  Serial.println("[TO ESP] " + message);
-  Serial1.println("@ESP: " + message);
+// ================================================================================
+// COMMAND HANDLERS FOR YOUR COMMAND MAP
+// ================================================================================
+
+bool handleRelayOnCommand(String command) {
+  int relayNum = -1;
+  
+  if (command.startsWith("RELAY_ON:")) {
+    relayNum = command.substring(9).toInt();
+  } else if (command.startsWith("RELAY:")) {
+    // Parse "RELAY:X:1" format
+    int firstColon = command.indexOf(':', 6);
+    int secondColon = command.indexOf(':', firstColon + 1);
+    if (firstColon != -1 && secondColon != -1) {
+      relayNum = command.substring(6, firstColon).toInt();
+      int state = command.substring(firstColon + 1, secondColon).toInt();
+      if (state == 0) {
+        return handleRelayOffCommand("RELAY_OFF:" + String(relayNum));
+      }
+    }
+  }
+  
+  if (relayNum >= 1 && relayNum <= 8) {
+    activateRelay(relayNum - 1, true);
+    Serial1.println("OK:RELAY_" + String(relayNum) + "_ON");
+    return true;
+  }
+  return false;
 }
 
+bool handleRelayOffCommand(String command) {
+  int relayNum = command.substring(10).toInt();
+  if (relayNum >= 1 && relayNum <= 8) {
+    activateRelay(relayNum - 1, false);
+    Serial1.println("OK:RELAY_" + String(relayNum) + "_OFF");
+    return true;
+  }
+  return false;
+}
 
-void setupSerialComms() {
-  Serial.begin(9600);
-  Serial1.begin(115200);
+bool handlePulseRelayCommand(String command) {
+  // Format: "PULSE_RELAY:X:DURATION"
+  int firstColon = command.indexOf(':', 12);
+  int secondColon = command.indexOf(':', firstColon + 1);
+  
+  if (firstColon == -1 || secondColon == -1) return false;
+  
+  int relayNum = command.substring(12, firstColon).toInt();
+  int duration = command.substring(firstColon + 1, secondColon).toInt();
+  
+  if (relayNum >= 1 && relayNum <= 8 && duration > 0) {
+    activateRelay(relayNum - 1, true);
+    delay(duration);
+    activateRelay(relayNum - 1, false);
+    Serial1.println("OK:PULSE_RELAY_" + String(relayNum) + "_" + String(duration));
+    return true;
+  }
+  return false;
+}
+
+bool handlePlayMP3A(String command) {
+  int track = command.substring(11).toInt();
+  if (track >= 1 && track <= 999) {
+    playMP3Track(1, track);
+    Serial1.println("OK:PLAY_MP3_A:" + String(track));
+    return true;
+  }
+  return false;
+}
+
+bool handlePlayMP3B(String command) {
+  int track = command.substring(11).toInt();
+  if (track >= 1 && track <= 999) {
+    playMP3Track(2, track);
+    Serial1.println("OK:PLAY_MP3_B:" + String(track));
+    return true;
+  }
+  return false;
+}
+
+bool handleSetMP3Volume(String command, int player) {
+  int volume = -1;
+  if (player == 1 && command.startsWith("SET_MP3_VOL:")) {
+    volume = command.substring(12).toInt();
+  } else if (player == 2 && command.startsWith("SET_MP3B_VOL:")) {
+    volume = command.substring(13).toInt();
+  }
+  
+  if (volume >= 0 && volume <= 30) {
+    setMP3Volume(player, volume);
+    Serial1.println("OK:SET_MP3" + String(player == 2 ? "B" : "") + "_VOL:" + String(volume));
+    return true;
+  }
+  return false;
+}
+
+bool handleSetVolume(String command) {
+  int volume = command.substring(11).toInt();
+  if (volume >= 0 && volume <= 30) {
+    showduinoState.volume = volume;
+    setMP3Volume(1, volume);
+    setMP3Volume(2, volume);
+    Serial1.println("OK:SET_VOLUME:" + String(volume));
+    return true;
+  }
+  return false;
+}
+
+bool handleVolCommand(String command) {
+  // Handle VOL_UP, VOL_DOWN, VOL_MUTE
+  if (command == "VOL_UP") {
+    showduinoState.volume = min(30, showduinoState.volume + 1);
+    setMP3Volume(1, showduinoState.volume);
+    setMP3Volume(2, showduinoState.volume);
+    Serial1.println("OK:VOL_UP:" + String(showduinoState.volume));
+    return true;
+  }
+  else if (command == "VOL_DOWN") {
+    showduinoState.volume = max(0, showduinoState.volume - 1);
+    setMP3Volume(1, showduinoState.volume);
+    setMP3Volume(2, showduinoState.volume);
+    Serial1.println("OK:VOL_DOWN:" + String(showduinoState.volume));
+    return true;
+  }
+  else if (command == "VOL_MUTE") {
+    setMP3Volume(1, 0);
+    setMP3Volume(2, 0);
+    Serial1.println("OK:VOL_MUTE");
+    return true;
+  }
+  return false;
+}
+
+bool handlePixelsLine(String command) {
+  // Format: "PIXELS_LINE:STRIP:START:COUNT:COLOR"
+  String params[5];
+  int paramCount = splitCommand(command, params, 5);
+  
+  if (paramCount >= 5) {
+    int strip = params[1].toInt();
+    int start = params[2].toInt();
+    int count = params[3].toInt();
+    uint32_t color = strtoul(params[4].c_str(), NULL, 16);
+    
+    if (strip >= 0 && strip < 4 && start >= 0 && count > 0) {
+      setPixelLine(strip, start, count, color);
+      Serial1.println("OK:PIXELS_LINE");
+      return true;
+    }
+  }
+  return false;
+}
+
+bool handlePixelsAll(String command) {
+  // Format: "PIXELS_ALL:COLOR"
+  int colonPos = command.indexOf(':', 11);
+  if (colonPos != -1) {
+    String colorStr = command.substring(11, colonPos);
+    uint32_t color = strtoul(colorStr.c_str(), NULL, 16);
+    
+    setAllPixels(color);
+    Serial1.println("OK:PIXELS_ALL");
+    return true;
+  }
+  return false;
+}
+
+bool handleNeoCommand(String command) {
+  // Handle various NEO_ commands
+  if (command.startsWith("NEO_CLEAR")) {
+    clearAllPixels();
+    Serial1.println("OK:NEO_CLEAR");
+    return true;
+  }
+  else if (command.startsWith("NEO_FILL:")) {
+    String colorStr = command.substring(10);
+    int colonPos = colorStr.indexOf(':');
+    if (colonPos != -1) colorStr = colorStr.substring(0, colonPos);
+    
+    uint32_t color = strtoul(colorStr.c_str(), NULL, 16);
+    setAllPixels(color);
+    Serial1.println("OK:NEO_FILL");
+    return true;
+  }
+  return false;
+}
+
+bool handleSetBrightness(String command) {
+  int brightness = command.substring(15).toInt();
+  if (brightness >= 0 && brightness <= 255) {
+    showduinoState.brightness = brightness;
+    setBrightness(brightness);
+    Serial1.println("OK:SET_BRIGHTNESS:" + String(brightness));
+    return true;
+  }
+  return false;
+}
+
+bool handleBrightCommand(String command) {
+  if (command == "BRIGHT_UP") {
+    showduinoState.brightness = min(255, showduinoState.brightness + 10);
+    setBrightness(showduinoState.brightness);
+    Serial1.println("OK:BRIGHT_UP:" + String(showduinoState.brightness));
+    return true;
+  }
+  else if (command == "BRIGHT_DOWN") {
+    showduinoState.brightness = max(0, showduinoState.brightness - 10);
+    setBrightness(showduinoState.brightness);
+    Serial1.println("OK:BRIGHT_DOWN:" + String(showduinoState.brightness));
+    return true;
+  }
+  return false;
+}
+
+bool handleTriggerCommand(String command) {
+  // Format: "TRIGGER_X" where X is trigger number
+  int triggerNum = command.substring(8).toInt();
+  
+  if (triggerNum >= 1 && triggerNum <= 13) {
+    executeTrigger(triggerNum);
+    Serial1.println("OK:TRIGGER_" + String(triggerNum));
+    return true;
+  }
+  return false;
+}
+
+bool handleSceneCommand(String command) {
+  if (command.startsWith("SCENE_PLAY:")) {
+    String sceneName = command.substring(11);
+    if (playScene(sceneName)) {
+      Serial1.println("OK:SCENE_PLAY:" + sceneName);
+      return true;
+    }
+  }
+  else if (command == "SCENE_STOP") {
+    stopScene();
+    Serial1.println("OK:SCENE_STOP");
+    return true;
+  }
+  else if (command.startsWith("SCENE_")) {
+    int sceneNum = command.substring(6).toInt();
+    if (sceneNum >= 0 && sceneNum <= 9) {
+      selectScene(sceneNum);
+      Serial1.println("OK:SCENE_" + String(sceneNum));
+      return true;
+    }
+  }
+  return false;
+}
+
+bool handleFXCommand(String command) {
+  // Format: "FX_ID:STRIP:START:COUNT:COLOR:SPEED:BRIGHTNESS:REVERSE:DURATION"
+  if (command.startsWith("FX_")) {
+    String fxParams = command.substring(3);
+    return executeCustomFXFromString(fxParams);
+  }
+  return false;
+}
+
+bool handleDMXCommand(String command) {
+  if (command.startsWith("DMX_CH:")) {
+    return handleDMXChannelCommand(command);
+  }
+  else if (command.startsWith("DMX_SCENE:")) {
+    return handleDMXSceneCommand(command);
+  }
+  else if (command.startsWith("DMX_BLACKOUT")) {
+    dmxBlackout();
+    Serial1.println("OK:DMX_BLACKOUT");
+    return true;
+  }
+  return false;
+}
+
+// Placeholder handlers for extended command set
+bool handleDebugCommand(String command) {
+  Serial1.println("OK:DEBUG_RECEIVED:" + command);
+  return true;
+}
+
+bool handleConfigCommand(String command) {
+  Serial1.println("OK:CONFIG_RECEIVED:" + command);
+  return true;
+}
+
+bool handleTimelineCommand(String command) {
+  Serial1.println("OK:TIMELINE_RECEIVED:" + command);
+  return true;
+}
+
+bool handleAuthCommand(String command) {
+  Serial1.println("OK:AUTH_RECEIVED:" + command);
+  return true;
+}
+
+bool handleSetCommand(String command) {
+  // Handle various SET_ commands that aren't volume/brightness
+  Serial1.println("OK:SET_RECEIVED:" + command);
+  return true;
+}
+
+bool handleClearCommand(String command) {
+  if (command == "CLEAR_ALL") {
+    clearAllPixels();
+    stopAllEffects();
+    Serial1.println("OK:CLEAR_ALL");
+    return true;
+  }
+  Serial1.println("OK:CLEAR_RECEIVED:" + command);
+  return true;
+}
+
+bool handleShowCommand(String command) {
+  Serial1.println("OK:SHOW_RECEIVED:" + command);
+  return true;
+}
+
+bool handleSaveCommand(String command) {
+  Serial1.println("OK:SAVE_RECEIVED:" + command);
+  return true;
+}
+
+bool handleLoadCommand(String command) {
+  Serial1.println("OK:LOAD_RECEIVED:" + command);
+  return true;
+}
+
+bool handleConnectCommand(String command) {
+  Serial1.println("OK:CONNECT_RECEIVED:" + command);
+  return true;
+}
+
+bool handleLockCommand(String command) {
+  Serial1.println("OK:LOCK_RECEIVED:" + command);
+  return true;
+}
+
+bool handleUnlockCommand(String command) {
+  Serial1.println("OK:UNLOCK_RECEIVED:" + command);
+  return true;
+}
+
+bool handleWiFiCommand(String command) {
+  Serial1.println("OK:WIFI_RECEIVED:" + command);
+  return true;
+}
+
+bool handleSDCommand(String command) {
+  Serial1.println("OK:SD_RECEIVED:" + command);
+  return true;
+}
+
+bool handlePropCommand(String command) {
+  Serial1.println("OK:PROP_RECEIVED:" + command);
+  return true;
+}
+
+bool handleDiagCommand(String command) {
+  Serial1.println("OK:DIAG_RECEIVED:" + command);
+  return true;
+}
+
+// ================================================================================
+// PIXEL CONTROL FUNCTIONS
+// ================================================================================
+
+void setPixelLine(int stripIndex, int start, int count, uint32_t color) {
+  if (stripIndex < 0 || stripIndex >= 4) return;
+  
+  for (int i = start; i < start + count && i < strips[stripIndex]->numPixels(); i++) {
+    strips[stripIndex]->setPixelColor(i, color);
+  }
+  strips[stripIndex]->show();
+}
+
+void setAllPixels(uint32_t color) {
+  for (int strip = 0; strip < 4; strip++) {
+    for (int i = 0; i < strips[strip]->numPixels(); i++) {
+      strips[strip]->setPixelColor(i, color);
+    }
+    strips[strip]->show();
+  }
+}
+
+void clearAllPixels() {
+  for (int strip = 0; strip < 4; strip++) {
+    strips[strip]->clear();
+    strips[strip]->show();
+  }
+}
+
+void setBrightness(uint8_t brightness) {
+  for (int strip = 0; strip < 4; strip++) {
+    strips[strip]->setBrightness(brightness);
+    strips[strip]->show();
+  }
+}
+
+// ================================================================================
+// TRIGGER AND SCENE FUNCTIONS
+// ================================================================================
+
+void executeTrigger(int triggerNum) {
+  switch (triggerNum) {
+    case 1:
+      executeOneshot(1);
+      break;
+    case 2:
+      executeOneshot(2);
+      break;
+    case 3:
+      executeOneshot(3);
+      break;
+    case 4:
+      executeOneshot(4);
+      break;
+    case 5:
+      executeOneshot(5);
+      break;
+    default:
+      if (triggerNum >= 6 && triggerNum <= 13) {
+        executeExtraButton(triggerNum);
+      }
+      break;
+  }
+}
+
+void selectScene(int sceneNumber) {
+  if (showduinoState.currentScene >= 0) {
+    deactivateScene(showduinoState.currentScene);
+  }
+  
+  showduinoState.currentScene = sceneNumber;
+  showduinoState.sceneActive[sceneNumber] = true;
+  
+  executeScene(sceneNumber);
+  Serial1.println("SCENE_" + String(sceneNumber) + "_SELECTED");
+}
+
+void executeScene(int scene) {
+  switch (scene) {
+    case 0: // Waiting/Idle
+      executeScene0();
+      break;
+    case 1: // Machine startup
+      executeScene1();
+      break;
+    case 2: // Victorian ambience
+      executeScene2();
+      break;
+    case 3: // Warning/Alert
+      executeScene3();
+      break;
+    case 4: // Electrical effects
+      executeScene4();
+      break;
+    case 5: // Time travel
+      executeScene5();
+      break;
+    case 6: // Malfunction
+      executeScene6();
+      break;
+    case 7: // Forest ambience
+      executeScene7();
+      break;
+    case 8: // Communications
+      executeScene8();
+      break;
+    case 9: // Full demo
+      executeScene9();
+      break;
+  }
+}
+
+void executeScene0() {
+  stopAllEffects();
+  machine.clear(); machine.show();
+  playMP3Track(1, 1);
+  showduinoState.waiting = true;
+}
+
+void executeScene1() {
+  playMP3Track(2, 5);
+  for (int i = 0; i < 4; i++) {
+    activateRelay(i, true);
+    delay(500);
+  }
+  executeCustomEffect(10, 0, 0, 20, 0x00FF00, 50, 255, false, 10000);
+  showduinoState.machineStarted = true;
+}
+
+void executeScene2() {
+  playMP3Track(1, 2);
+  for (int i = 0; i < NUM_CANDLES; i++) {
+    candles.setPixelColor(i, 255, 100, 0);
+  }
+  candles.show();
+  executeCustomEffect(15, 1, 0, 50, 0xFF6400, 30, 200, false, 0);
+}
+
+void executeScene3() {
+  playMP3Track(2, 18);
+  executeCustomEffect(25, 0, 0, NUM_MACHINE, 0xFF0000, 80, 255, false, 0);
+  activateRelay(0, true);
+  activateRelay(1, true);
+  recallDMXScene(2);
+}
+
+void executeScene4() {
+  showduinoState.isShocking = true;
+  playMP3Track(2, 19);
+  executeCustomEffect(30, 0, 0, NUM_MACHINE, 0xFFFFFF, 90, 255, false, 0);
+}
+
+void executeScene5() {
+  showduinoState.isTravelling = true;
+  showduinoState.circuitFlicker = true;
+  playMP3Track(2, 16);
+  executeCustomEffect(50, 0, 0, NUM_MACHINE, 0x0080FF, 95, 255, false, 0);
+  executeCustomEffect(51, 3, 0, NUM_TIME_CIRCUITS, 0xFF8000, 85, 255, true, 0);
+  for (int i = 4; i < 8; i++) {
+    activateRelay(i, true);
+  }
+  recallDMXScene(1);
+}
+
+void executeScene6() {
+  playMP3Track(2, 15);
+  showduinoState.isGlitching = true;
+  executeCustomEffect(60, 0, 0, NUM_MACHINE, 0xFF0080, 70, 200, false, 0);
+  for (int i = 0; i < NUM_RELAYS; i++) {
+    if (random(2)) {
+      activateRelay(i, true);
+    }
+  }
+}
+
+void executeScene7() {
+  playMP3Track(1, 20);
+  executeCustomEffect(40, 3, 0, NUM_TIME_CIRCUITS, 0x00FF32, 40, 180, false, 0);
+}
+
+void executeScene8() {
+  playMP3Track(2, 7);
+  executeCustomEffect(20, 0, 40, 20, 0x0000FF, 60, 255, false, 0);
+}
+
+void executeScene9() {
+  playMP3Track(2, 21);
+  executeCustomEffect(75, 0, 0, NUM_MACHINE, 0xFF4000, 80, 255, false, 0);
+  executeCustomEffect(76, 1, 0, NUM_TIME_DISPLAY, 0x40FF00, 75, 255, true, 0);
+  executeCustomEffect(77, 3, 0, NUM_TIME_CIRCUITS, 0x0040FF, 85, 255, false, 0);
+  for (int i = 0; i < NUM_RELAYS; i++) {
+    activateRelay(i, true);
+  }
+  showduinoState.circuitFlicker = true;
+  showduinoState.isGlitching = true;
+  recallDMXScene(1);
+}
+
+void deactivateScene(int scene) {
+  showduinoState.sceneActive[scene] = false;
+  stopAllEffects();
+}
+
+// ================================================================================
+// CUSTOM FX INTEGRATION
+// ================================================================================
+
+bool executeCustomFXFromString(String fxParams) {
+  String params[9];
+  int paramCount = splitCommand("FX_" + fxParams, params, 9);
+  
+  if (paramCount >= 7) {
+    int effectID = params[1].toInt();
+    int strip = params[2].toInt();
+    int start = params[3].toInt();
+    int count = params[4].toInt();
+    
+    String colorHex = params[5];
+    if (colorHex.startsWith("0x")) colorHex = colorHex.substring(2);
+    uint32_t color = strtoul(colorHex.c_str(), NULL, 16);
+    
+    int speed = params[6].toInt();
+    int brightness = (paramCount >= 8) ? params[7].toInt() : 255;
+    bool reverse = (paramCount >= 9) ? (params[8].toInt() != 0) : false;
+    unsigned long duration = (paramCount >= 10) ? params[9].toInt() : 0;
+    
+    if (effectID >= 0 && effectID <= 99) {
+      bool success = executeCustomEffect(effectID, strip, start, count, color, speed, brightness, reverse, duration);
+      
+      if (success) {
+        Serial1.println("OK:FX_" + String(effectID));
+        return true;
+      }
+    }
+  }
+  
+  Serial1.println("ERROR:INVALID_FX_PARAMS");
+  return false;
+}
+
+bool executeCustomEffect(int fxID, int stripIndex, int start, int count, uint32_t color, int speed, int brightness, bool reverse, unsigned long duration) {
+  if (stripIndex < 0 || stripIndex >= 4) return false;
+  if (start < 0) return false;
+  if (count <= 0) return false;
+  if (fxID < 0 || fxID > 99) return false;
+
+  int slot = -1;
+  for (int i = 0; i < 4; i++) {
+    if (!activeEffects[i].running) {
+      slot = i;
+      break;
+    }
+  }
+
+  if (slot == -1) return false;
+
+  activeEffects[slot] = {
+    true, (uint8_t)fxID, (uint8_t)stripIndex, (uint16_t)start, (uint16_t)count,
+    color, (uint8_t)speed, (uint8_t)brightness, millis(), millis(),
+    0, 0, reverse, true, duration
+  };
+
+  return true;
+}
+
+void updateActiveEffects(unsigned long currentTime) {
+  for (int i = 0; i < 4; i++) {
+    if (activeEffects[i].running) {
+      if (activeEffects[i].effectDuration > 0) {
+        if (currentTime - activeEffects[i].startTime >= activeEffects[i].effectDuration) {
+          activeEffects[i].running = false;
+          continue;
+        }
+      }
+      
+      if (activeEffects[i].useCustomFX) {
+        unsigned long frameDelay = map(activeEffects[i].speed, 1, 100, 200, 10);
+        
+        if (currentTime - activeEffects[i].lastUpdate >= frameDelay) {
+          runEffectScoped(*strips[activeEffects[i].strip], 
+                         activeEffects[i].fxID, 
+                         activeEffects[i].startLED, 
+                         activeEffects[i].count, 
+                         activeEffects[i].color, 
+                         activeEffects[i].speed, 
+                         activeEffects[i].brightness, 
+                         activeEffects[i].reverse);
+          
+          activeEffects[i].lastUpdate = currentTime;
+        }
+      }
+    }
+  }
+}
+
+// ================================================================================
+// ORIGINAL VISUAL EFFECTS
+// ================================================================================
+
+void timecircuitFlicker() {
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= flickerSpeed) {
+    previousMillis = currentMillis;
+    for (int i = 0; i < time_circuits.numPixels(); i++) {
+      time_circuits.setPixelColor(i, time_circuits.Color(random(256), random(256), random(256)));
+    }
+    time_circuits.show();
+  }
+}
+
+void consoleFlicker() {
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= flickerTimer) {
+    previousMillis = currentMillis;
+    for (int i = 11; i <= 14; i++) {
+      if (random(10) == 0) {
+        machine.setPixelColor(i, 255, 255, 255);
+      } else {
+        machine.setPixelColor(i, 0, 0, 0);
+      }
+    }
+    machine.show();
+  }
+}
+
+void shocking() {
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= electricTimer) {
+    previousMillis = currentMillis;
+    for (int i = 0; i < 20; i++) {
+      machine.setPixelColor(i, 255, 255, 255);
+    }
+    delay(50);
+    machine.clear();
+    machine.show();
+  }
+}
+
+void twinkle() {
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= twinkleTimer) {
+    previousMillis = currentMillis;
+    twinkleTimer = random(2, 100);
+    
+    for (int i = 22; i < 28; i++) {
+      if (random(97) == 0) {
+        int brightness = random(5, 100);
+        machine.setPixelColor(i, brightness, brightness, brightness);
+      } else {
+        machine.setPixelColor(i, 0, 0, 0);
+      }
+    }
+    machine.show();
+  }
+}
+
+// ================================================================================
+// BUTTON HANDLING
+// ================================================================================
+
+void handleButtonInputs() {
+  static unsigned long lastButtonCheck = 0;
+  if (millis() - lastButtonCheck < 50) return;
+  
+  if (digitalRead(START_BUTTON) == LOW) {
+    startMachine();
+    Serial1.println("START_BUTTON_PRESSED");
+    delay(200);
+  }
+  
+  if (digitalRead(EMERGENCY_STOP) == LOW) {
+    emergencyStopAll();
+    Serial1.println("EMERGENCY_STOP_PRESSED");
+    delay(200);
+  }
+  
+  if (digitalRead(RESET_BUTTON) == LOW) {
+    resetSystem();
+    Serial1.println("RESET_BUTTON_PRESSED");
+    delay(200);
+  }
+  
+  if (digitalRead(FAN_BUTTON) == LOW) {
+    toggleFan();
+    Serial1.println("FAN_BUTTON_PRESSED");
+    delay(200);
+  }
+  
+  if (digitalRead(ONESHOT1) == LOW) {
+    executeOneshot(1);
+    Serial1.println("ONESHOT1_PRESSED");
+    delay(200);
+  }
+  
+  if (digitalRead(ONESHOT2) == LOW) {
+    executeOneshot(2);
+    Serial1.println("ONESHOT2_PRESSED");
+    delay(200);
+  }
+  
+  if (digitalRead(ONESHOT3) == LOW) {
+    executeOneshot(3);
+    Serial1.println("ONESHOT3_PRESSED");
+    delay(200);
+  }
+  
+  if (digitalRead(ONESHOT4) == LOW) {
+    executeOneshot(4);
+    Serial1.println("ONESHOT4_PRESSED");
+    delay(200);
+  }
+  
+  if (digitalRead(ONESHOT5) == LOW) {
+    executeOneshot(5);
+    Serial1.println("ONESHOT5_PRESSED");
+    delay(200);
+  }
+  
+  // Extra buttons
+  int extraButtons[] = {EXTRA_BUTTON_6, EXTRA_BUTTON_7, EXTRA_BUTTON_8, EXTRA_BUTTON_9, 
+                        EXTRA_BUTTON_10, EXTRA_BUTTON_11, EXTRA_BUTTON_12, EXTRA_BUTTON_13};
+  
+  for (int i = 0; i < 8; i++) {
+    if (digitalRead(extraButtons[i]) == LOW) {
+      executeExtraButton(i + 6);
+      Serial1.println("EXTRA_BUTTON_" + String(i + 6) + "_PRESSED");
+      delay(200);
+    }
+  }
+  
+  lastButtonCheck = millis();
+}
+
+void checkSceneButtons() {
+  for (int scene = 0; scene < sceneButtons; scene++) {
+    if (io.digitalRead(scene) == LOW) {
+      selectScene(scene);
+      delay(200);
+    }
+  }
+}
+
+void executeOneshot(int oneshotNumber) {
+  switch (oneshotNumber) {
+    case 1:
+      activateRelay(0, true);
+      executeCustomEffect(5, 0, 0, 10, 0xFFFFFF, 95, 255, false, 1000);
+      delay(100);
+      activateRelay(0, false);
+      break;
+    case 2:
+      activateRelay(1, true);
+      executeCustomEffect(12, 1, 0, 30, 0x8080FF, 70, 200, false, 3000);
+      delay(1000);
+      activateRelay(1, false);
+      break;
+    case 3:
+      playMP3Track(2, 20);
+      executeCustomEffect(35, 0, 0, 50, 0xFF8000, 85, 255, false, 5000);
+      break;
+    case 4:
+      for (int i = 0; i < 3; i++) {
+        machine.fill(machine.Color(255, 255, 255));
+        machine.show();
+        delay(50);
+        machine.clear();
+        machine.show();
+        delay(100);
+      }
+      executeCustomEffect(40, 0, 0, NUM_MACHINE, 0x8080FF, 90, 255, false, 2000);
+      break;
+    case 5:
+      digitalWrite(BUZZER_PIN, HIGH);
+      executeCustomEffect(45, 2, 0, NUM_CANDLES, 0xFF0040, 60, 255, true, 3000);
+      delay(500);
+      digitalWrite(BUZZER_PIN, LOW);
+      break;
+  }
+}
+
+void executeExtraButton(int buttonNumber) {
+  executeCustomEffect(buttonNumber + 10, (buttonNumber - 6) % 4, 0, 20, 
+                     0xFF0000 << ((buttonNumber - 6) * 8), 50 + buttonNumber, 255, false, 3000);
+}
+
+// ================================================================================
+// SYSTEM CONTROL FUNCTIONS
+// ================================================================================
+
+void startMachine() {
+  showduinoState.machineStarted = true;
+  showduinoState.emergencyStopActive = false;
+  showduinoState.startMillis = millis();
+  
+  digitalWrite(BUZZER_PIN, HIGH);
   delay(100);
-  sendToESP("{SYS} Mega is online.");
+  digitalWrite(BUZZER_PIN, LOW);
+  
+  Serial1.println("SYSTEM_STARTED");
 }
 
+void emergencyStopAll() {
+  showduinoState.emergencyStopActive = true;
+  showduinoState.machineStarted = false;
+  
+  for (int i = 0; i < NUM_RELAYS; i++) {
+    activateRelay(i, false);
+  }
+  
+  stopAllEffects();
+  
+  for (int i = 0; i < 3; i++) {
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(200);
+    digitalWrite(BUZZER_PIN, LOW);
+    delay(100);
+  }
+  
+  Serial1.println("EMERGENCY_STOP_COMPLETE");
+}
 
+void resetSystem() {
+  for (int i = 0; i < NUM_RELAYS; i++) {
+    activateRelay(i, false);
+  }
+  
+  stopAllEffects();
+  
+  showduinoState.machineStarted = false;
+  showduinoState.emergencyStopActive = false;
+  showduinoState.currentScene = -1;
+  
+  for (int i = 0; i < 10; i++) {
+    showduinoState.sceneActive[i] = false;
+  }
+  
+  Serial1.println("SYSTEM_RESET_COMPLETE");
+}
 
+void toggleFan() {
+  showduinoState.relayStates[7] = !showduinoState.relayStates[7];
+  activateRelay(7, showduinoState.relayStates[7]);
+}
 
+void stopAllEffects() {
+  showduinoState.isShocking = false;
+  showduinoState.isTravelling = false;
+  showduinoState.isGlitching = false;
+  showduinoState.circuitFlicker = false;
+  
+  for (int i = 0; i < 4; i++) {
+    if (activeEffects[i].running) {
+      activeEffects[i].running = false;
+      for (int j = activeEffects[i].startLED; j < activeEffects[i].startLED + activeEffects[i].count; j++) {
+        strips[activeEffects[i].strip]->setPixelColor(j, 0);
+      }
+    }
+  }
+  
+  stopMP3Player(1);
+  stopMP3Player(2);
+  
+  machine.clear(); machine.show();
+  time_display.clear(); time_display.show();
+  candles.clear(); candles.show();
+  time_circuits.clear(); time_circuits.show();
+  
+  dmxBlackout();
+}
 
+// ================================================================================
+// HARDWARE CONTROL
+// ================================================================================
 
+void activateRelay(int relayIndex, bool state) {
+  if (relayIndex < 0 || relayIndex >= NUM_RELAYS) return;
 
+  int pin = (relayIndex < 4) ? RELAY_5V_START + relayIndex : RELAY_12V_START + (relayIndex - 4);
+  digitalWrite(pin, state ? HIGH : LOW);
+  showduinoState.relayStates[relayIndex] = state;
+}
 
+// ================================================================================
+// MP3 PLAYER FUNCTIONS
+// ================================================================================
 
+void playMP3Track(int playerNum, int trackNum) {
+  if (playerNum < 1 || playerNum > 2) return;
+  if (trackNum < 1 || trackNum > 999) return;
 
+  sendMP3Command(playerNum, 0x03, trackNum);
+  mp3States[playerNum - 1].playing = true;
+  mp3States[playerNum - 1].currentTrack = trackNum;
+}
 
+void stopMP3Player(int playerNum) {
+  if (playerNum < 1 || playerNum > 2) return;
 
+  sendMP3Command(playerNum, 0x16, 0);
+  mp3States[playerNum - 1].playing = false;
+  mp3States[playerNum - 1].currentTrack = 0;
+}
 
-// === SETUP ===
+void pauseMP3Player(int playerNum) {
+  if (playerNum < 1 || playerNum > 2) return;
+  sendMP3Command(playerNum, 0x0E, 0);
+}
 
+void resumeMP3Player(int playerNum) {
+  if (playerNum < 1 || playerNum > 2) return;
+  sendMP3Command(playerNum, 0x0D, 0);
+}
 
+void nextMP3Track(int playerNum) {
+  if (playerNum < 1 || playerNum > 2) return;
+  sendMP3Command(playerNum, 0x01, 0);
+  mp3States[playerNum - 1].currentTrack++;
+}
 
-/*/ CURRENT BUZZER OPTIONS: 
- 
- 
- S_CONNECTION   S_DISCONNECTION S_BUTTON_PUSHED   
- S_MODE1        S_MODE2         S_MODE3     
- S_SURPRISE     S_OHOOH         S_OHOOH2    
- S_CUDDLY       S_SLEEPING      S_HAPPY     
- S_SUPER_HAPPY  S_HAPPY_SHORT   S_SAD       
- S_CONFUSED     S_FART1         S_FART2     
- S_FART3        S_JUMP 20
+void prevMP3Track(int playerNum) {
+  if (playerNum < 1 || playerNum > 2) return;
+  sendMP3Command(playerNum, 0x02, 0);
+  if (mp3States[playerNum - 1].currentTrack > 1) {
+    mp3States[playerNum - 1].currentTrack--;
+  }
+}
 
- */
+void setMP3Volume(int playerNum, int volume) {
+  if (playerNum < 1 || playerNum > 2) return;
+  volume = constrain(volume, 0, 30);
 
+  sendMP3Command(playerNum, 0x06, volume);
+  mp3States[playerNum - 1].volume = volume;
+}
 
+void sendMP3Command(int playerNum, byte command, int parameter) {
+  SoftwareSerial* player = (playerNum == 1) ? &mp3Player1 : &mp3Player2;
 
+  byte cmd[10] = {0x7E, 0xFF, 0x06, command, 0x00, 0x00, 0x00, 0x00, 0x00, 0xEF};
+  cmd[5] = (parameter >> 8) & 0xFF;
+  cmd[6] = parameter & 0xFF;
 
+  int checksum = -(cmd[1] + cmd[2] + cmd[3] + cmd[4] + cmd[5] + cmd[6]);
+  cmd[7] = (checksum >> 8) & 0xFF;
+  cmd[8] = checksum & 0xFF;
 
+  for (int i = 0; i < 10; i++) {
+    player->write(cmd[i]);
+  }
+
+  delay(100);
+}
+
+// ================================================================================
+// DMX FUNCTIONS
+// ================================================================================
+
+bool handleDMXChannelCommand(String command) {
+  int firstColon = command.indexOf(':', 7);
+  int secondColon = command.indexOf(':', firstColon + 1);
+  
+  if (firstColon == -1 || secondColon == -1) return false;
+  
+  int channel = command.substring(7, firstColon).toInt();
+  int value = command.substring(firstColon + 1, secondColon).toInt();
+  
+  if (channel < 1 || channel > DMX_CHANNELS || value < 0 || value > 255) return false;
+  
+  setDMXChannel(channel, value);
+  Serial1.println("OK:DMX_CH:" + String(channel) + ":" + String(value));
+  return true;
+}
+
+bool handleDMXSceneCommand(String command) {
+  int colon = command.indexOf(':', 10);
+  if (colon == -1) colon = command.length();
+  
+  int sceneNumber = command.substring(10, colon).toInt();
+  
+  if (recallDMXScene(sceneNumber)) {
+    Serial1.println("OK:DMX_SCENE:" + String(sceneNumber));
+    return true;
+  } else {
+    Serial1.println("ERROR:DMX_SCENE_NOT_FOUND:" + String(sceneNumber));
+    return false;
+  }
+}
+
+void setDMXChannel(uint16_t channel, uint8_t value) {
+  if (channel < 1 || channel > DMX_CHANNELS) return;
+  
+  dmxData[channel] = value;
+  DmxSimple.write(channel, value);
+}
+
+void setDMXRGB(uint16_t startChannel, uint8_t red, uint8_t green, uint8_t blue) {
+  setDMXChannel(startChannel, red);
+  setDMXChannel(startChannel + 1, green);
+  setDMXChannel(startChannel + 2, blue);
+}
+
+void dmxBlackout() {
+  for (int i = 1; i <= DMX_CHANNELS; i++) {
+    setDMXChannel(i, 0);
+  }
+}
+
+bool recallDMXScene(int sceneNumber) {
+  switch (sceneNumber) {
+    case 0:
+      dmxBlackout();
+      return true;
+    case 1:
+      for (int i = 0; i < fixtureCount; i++) {
+        if (fixtures[i].active && fixtures[i].fixtureType == "RGB_PAR") {
+          setDMXRGB(fixtures[i].startChannel, 255, 255, 255);
+          setDMXChannel(fixtures[i].startChannel + 3, 255);
+        }
+      }
+      return true;
+    case 2:
+      for (int i = 0; i < fixtureCount; i++) {
+        if (fixtures[i].active && fixtures[i].fixtureType == "RGB_PAR") {
+          setDMXRGB(fixtures[i].startChannel, 255, 0, 0);
+          setDMXChannel(fixtures[i].startChannel + 3, 200);
+        }
+      }
+      return true;
+    case 3:
+      for (int i = 0; i < fixtureCount; i++) {
+        if (fixtures[i].active && fixtures[i].fixtureType == "RGB_PAR") {
+          setDMXRGB(fixtures[i].startChannel, 0, 0, 255);
+          setDMXChannel(fixtures[i].startChannel + 3, 200);
+        }
+      }
+      return true;
+    default:
+      return false;
+  }
+}
+
+// ================================================================================
+// SCENE PLAYER FUNCTIONS
+// ================================================================================
+
+bool playScene(String sceneName) {
+  if (sceneName == "scene1" || sceneName == "Opening Sequence") {
+    executeCustomEffect(10, 0, 0, 20, 0xFF0000, 50, 255, false, 30000);
+    executeCustomEffect(15, 1, 0, 20, 0x00FF00, 60, 255, false, 30000);
+    recallDMXScene(1);
+    return true;
+  }
+  
+  else if (sceneName == "scene2" || sceneName == "Main Show") {
+    executeCustomEffect(25, 0, 0, NUM_MACHINE, 0x0000FF, 30, 200, false, 60000);
+    recallDMXScene(2);
+    return true;
+  }
+  
+  else if (sceneName == "scene3" || sceneName == "Finale") {
+    executeCustomEffect(50, 0, 0, NUM_MACHINE, 0xFFFFFF, 80, 255, false, 0);
+    executeCustomEffect(51, 1, 0, NUM_TIME_DISPLAY, 0xFF8000, 90, 255, true, 0);
+    recallDMXScene(1);
+    return true;
+  }
+  
+  return false;
+}
+
+void stopScene() {
+  stopAllEffects();
+}
+
+// ================================================================================
+// UTILITY FUNCTIONS
+// ================================================================================
+
+int splitCommand(String command, String* parts, int maxParts) {
+  int partCount = 0;
+  int startPos = 0;
+  
+  for (int i = 0; i <= command.length() && partCount < maxParts; i++) {
+    if (i == command.length() || command.charAt(i) == ':') {
+      if (i > startPos) {
+        parts[partCount++] = command.substring(startPos, i);
+      }
+      startPos = i + 1;
+    }
+  }
+  
+  return partCount;
+}
+
+void sendVoltageStatus() {
+  float voltage5V = readVoltage5V();
+  float voltage12V = readVoltage12V();
+  Serial1.println("VOLTAGE_5V:" + String(voltage5V, 2));
+  Serial1.println("VOLTAGE_12V:" + String(voltage12V, 2));
+}
+
+float readVoltage5V() {
+  int rawValue = analogRead(VOLTAGE_5V_PIN);
+  float voltage = (rawValue * 5.0) / 1023.0;
+  return voltage;
+}
+
+float readVoltage12V() {
+  int rawValue = analogRead(VOLTAGE_12V_PIN);
+  float voltage = (rawValue * 5.0 * 3.0) / 1023.0;
+  return voltage;
+}
+
+void sendStatusUpdate() {
+  float voltage5V = readVoltage5V();
+  float voltage12V = readVoltage12V();
+  float temperature = dht.readTemperature();
+  float humidity = dht.readHumidity();
+  unsigned long uptime = millis() - systemStartTime;
+
+  if (isnan(temperature)) temperature = 25.0;
+  if (isnan(humidity)) humidity = 50.0;
+
+  Serial1.print("STATUS:");
+  Serial1.print("V5=");
+  Serial1.print(voltage5V, 2);
+  Serial1.print(",V12=");
+  Serial1.print(voltage12V, 2);
+  Serial1.print(",TEMP=");
+  Serial1.print(temperature, 1);
+  Serial1.print(",HUM=");
+  Serial1.print(humidity, 1);
+  Serial1.print(",UP=");
+  Serial1.print(uptime / 1000);
+  Serial1.print(",CMD=");
+  Serial1.print(showduinoState.commandsProcessed);
+  Serial1.print(",ERR=");
+  Serial1.print(showduinoState.commandErrors);
+
+  int activeFXCount = 0;
+  for (int i = 0; i < 4; i++) {
+    if (activeEffects[i].running) activeFXCount++;
+  }
+  Serial1.print(",FX=");
+  Serial1.print(activeFXCount);
+
+  Serial1.print(",REL=");
+  for (int i = 0; i < NUM_RELAYS; i++) {
+    Serial1.print(showduinoState.relayStates[i] ? "1" : "0");
+  }
+
+  Serial1.print(",MP3_A=");
+  Serial1.print(mp3States[0].playing ? "P" : "S");
+  Serial1.print(",MP3_B=");
+  Serial1.print(mp3States[1].playing ? "P" : "S");
+
+  Serial1.print(",SCENE=");
+  Serial1.print(scenePlayer.playing ? "P" : "S");
+  if (scenePlayer.playing) {
+    Serial1.print(",SCENE_NAME=");
+    Serial1.print(scenePlayer.currentScene);
+  }
+
+  Serial1.println();
+}
+
+void updateSystemStatus() {
+  if (millis() - lastStatusUpdate > STATUS_UPDATE_INTERVAL) {
+    showduinoState.voltage12V = readVoltage12V();
+    showduinoState.voltage5V = readVoltage5V();
+    showduinoState.voltage3V3 = analogRead(VOLTAGE_3V3_PIN) * voltageMultiplier;
+    showduinoState.powerOK = digitalRead(POWER_OK_PIN);
+    showduinoState.uptime = millis();
+    
+    lastStatusUpdate = millis();
+  }
+}
+
+void updateTemperature() {
+  if (millis() - lastTempCheck > TEMP_CHECK_INTERVAL) {
+    float temp = dht.readTemperature();
+    float hum = dht.readHumidity();
+    
+    if (!isnan(temp) && !isnan(hum)) {
+      showduinoState.temperature = temp;
+      showduinoState.humidity = hum;
+    }
+    
+    lastTempCheck = millis();
+  }
+}
+
+void updateRTCHeartbeat() {
+  static unsigned long lastRTCUpdate = 0;
+  if (millis() - lastRTCUpdate > 10000) {
+    if (rtc.isrunning()) {
+      DateTime now = rtc.now();
+      Serial1.println("RTC:" + String(now.unixtime()));
+    }
+    lastRTCUpdate = millis();
+  }
+}
+
+// ================================================================================
+// INITIALIZATION
+// ================================================================================
+
+void initializeStateArrays() {
+  for (int i = 0; i < NUM_RELAYS; i++) {
+    showduinoState.relayStates[i] = false;
+  }
+
+  for (int i = 0; i < 4; i++) {
+    activeEffects[i] = {false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, false, 0};
+  }
+
+  for (int i = 0; i < 2; i++) {
+    mp3States[i] = {false, 0, 15};
+  }
+
+  for (int i = 0; i < 10; i++) {
+    showduinoState.sceneActive[i] = false;
+  }
+
+  scenePlayer = {false, "", 0};
+  
+  showduinoState.machineStarted = false;
+  showduinoState.emergencyStopActive = false;
+  showduinoState.esp32Connected = false;
+  showduinoState.currentScene = -1;
+  showduinoState.waiting = true;
+  showduinoState.isShocking = false;
+  showduinoState.isTravelling = false;
+  showduinoState.isGlitching = false;
+  showduinoState.circuitFlicker = false;
+  showduinoState.startMillis = 0;
+  showduinoState.commandsProcessed = 0;
+  showduinoState.commandErrors = 0;
+  showduinoState.brightness = 255;
+  showduinoState.volume = 15;
+}
+
+void setupDefaultFixtures() {
+  fixtureCount = 0;
+  
+  for (int i = 0; i < MAX_FIXTURES; i++) {
+    fixtures[i] = {0, 0, "", "", false};
+  }
+  
+  addFixture(1, 4, "RGB_PAR", "Stage Left");
+  addFixture(5, 4, "RGB_PAR", "Stage Center");
+  addFixture(9, 4, "RGB_PAR", "Stage Right");
+  addFixture(13, 4, "RGB_PAR", "Back Left");
+  addFixture(17, 4, "RGB_PAR", "Back Right");
+}
+
+bool addFixture(uint16_t startChannel, uint8_t channelCount, String type, String name) {
+  if (fixtureCount >= MAX_FIXTURES) return false;
+  if (startChannel < 1 || startChannel > DMX_CHANNELS) return false;
+  if (startChannel + channelCount - 1 > DMX_CHANNELS) return false;
+  
+  fixtures[fixtureCount] = {
+    startChannel,
+    channelCount,
+    type,
+    name,
+    true
+  };
+  
+  fixtureCount++;
+  return true;
+}
+
+// ================================================================================
+// MAIN SETUP AND LOOP
+// ================================================================================
 
 void setup() {
-  cute.init(BUZZER_PIN);
-  cute.play(S_CONNECTION);
-  Serial.begin(115200);   // USB serial monitor
-  Serial1.begin(115200);  // To ESP32 via Serial1 (TX1=18, RX1=19)
-  delay(1000);
-  Serial.println("[MEGA] Mega booted");
-  Serial1.println("@ESP: Mega booted");
-
-
-  setupRTC();  // ← Tidy and modular
-  logVoltageDiagnostics();
-  if (!io.begin(SX_ADDR)) {
-    Serial.println("[ERROR] SX1509 not detected.");
-  } else {
-    Serial.println("[OK] SX1509 online.");
-    for (int i = 0; i < numSceneButtons; i++) {
-      io.pinMode(sxSceneButtons[i], INPUT_PULLUP);
+  Serial.begin(115200);
+  Serial1.begin(115200);
+  
+  Wire.begin();
+  
+  systemStartTime = millis();
+  
+  initializeStateArrays();
+  
+  // Initialize NeoPixel strips
+  machine.begin(); machine.show();
+  time_display.begin(); time_display.show();
+  candles.begin(); candles.show();
+  time_circuits.begin(); time_circuits.show();
+  
+  // Initialize relays
+  for (int i = 0; i < 4; i++) {
+    pinMode(RELAY_5V_START + i, OUTPUT);
+    digitalWrite(RELAY_5V_START + i, LOW);
+  }
+  
+  for (int i = 0; i < 4; i++) {
+    pinMode(RELAY_12V_START + i, OUTPUT);
+    digitalWrite(RELAY_12V_START + i, LOW);
+  }
+  
+  // Initialize buttons
+  pinMode(START_BUTTON, INPUT_PULLUP);
+  pinMode(EMERGENCY_STOP, INPUT_PULLUP);
+  pinMode(RESET_BUTTON, INPUT_PULLUP);
+  pinMode(FAN_BUTTON, INPUT_PULLUP);
+  pinMode(ONESHOT1, INPUT_PULLUP);
+  pinMode(ONESHOT2, INPUT_PULLUP);
+  pinMode(ONESHOT3, INPUT_PULLUP);
+  pinMode(ONESHOT4, INPUT_PULLUP);
+  pinMode(ONESHOT5, INPUT_PULLUP);
+  pinMode(EXTRA_BUTTON_6, INPUT_PULLUP);
+  pinMode(EXTRA_BUTTON_7, INPUT_PULLUP);
+  pinMode(EXTRA_BUTTON_8, INPUT_PULLUP);
+  pinMode(EXTRA_BUTTON_9, INPUT_PULLUP);
+  pinMode(EXTRA_BUTTON_10, INPUT_PULLUP);
+  pinMode(EXTRA_BUTTON_11, INPUT_PULLUP);
+  pinMode(EXTRA_BUTTON_12, INPUT_PULLUP);
+  pinMode(EXTRA_BUTTON_13, INPUT_PULLUP);
+  
+  // Initialize buzzer
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+  
+  // Initialize voltage monitoring
+  pinMode(POWER_OK_PIN, INPUT);
+  
+  // Initialize DHT sensor
+  dht.begin();
+  
+  // Initialize SX1509 scene selector
+  if (io.begin(SX1509_ADDRESS)) {
+    for (int i = 0; i < sceneButtons; i++) {
+      io.pinMode(i, INPUT_PULLUP);
     }
   }
-  for (int i = 0; i < NUM_RELAYS; i++) {
-    pinMode(relayPins[i], OUTPUT);
-    digitalWrite(relayPins[i], LOW);
-    relayStates[i] = false;
+  
+  // Initialize MP3 players
+  mp3Player1.begin(9600);
+  mp3Player2.begin(9600);
+  delay(500);
+  
+  // Initialize RTC
+  if (rtc.begin() && !rtc.isrunning()) {
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
   }
-
-  for (int i = 0; i < NUM_PIXEL_LINES; i++) {
-    pixels[i].begin();
-    pixels[i].clear();
-    pixels[i].show();
+  
+  // Initialize DMX
+  DmxSimple.usePin(DMX_OUTPUT_PIN);
+  DmxSimple.maxChannel(DMX_CHANNELS);
+  
+  for (int i = 1; i <= DMX_CHANNELS; i++) {
+    dmxData[i] = 0;
+    DmxSimple.write(i, 0);
   }
-
-  pinMode(START_BTN_PIN, INPUT_PULLUP);
-  pinMode(RESET_BTN_PIN, INPUT_PULLUP);
-  pinMode(STOP_BTN_PIN, INPUT_PULLUP);
-  dht.begin();
-  Serial.println("[DHT] Sensor initialized.");
-
-
-  for (int i = 0; i < NUM_BUTTONS; i++) {
-    pinMode(buttonPins[i], INPUT_PULLUP);
-  }
-
-  pinMode(irPin, INPUT);
-  Serial.println("Showduino Mega Booted");
+  
+  setupDefaultFixtures();
+  
+  Serial.println("===============================================");
+  Serial.println("🎭 SHOWDUINO COMMAND-RESPONSIVE CONTROLLER");
+  Serial.println("🎨 Custom 100-Effect FX Library");
+  Serial.println("📡 Full Command Map Support");
+  Serial.println("===============================================");
+  
+  Serial1.println("MEGA_READY");
 }
-
-
-
-
-
-
-
-
-// === END OF SETUP ===
-
-
-
-
-
-
-
-
-
 
 void loop() {
-  checkButtons();         // Your relay buttons
-  checkControlButtons();  // New START/STOP/RESET buttons
-  checkSX1509Buttons();   // Scene buttons (0–9)
-  checkIR();              // Remote
-  logDHTData();           // Check and log every 40s
-  checkSerial();
-  // Auto-off check
-  // Check for timed relay auto-OFF
-  for (int i = 0; i < NUM_RELAYS; i++) {
-    if (relayUseTimer[i] && relayStates[i]) {
-      if (millis() - relayTimers[i] >= relayDuration) {
-        digitalWrite(relayPins[i], LOW);
-        relayStates[i] = false;
-        Serial.print("[TIMER] RELAY_");
-        Serial.print(i + 1);
-        Serial.println(" AUTO-OFF");
-      }
-    }
+  unsigned long currentTime = millis();
+  
+  handleESP32Communication();
+  updateActiveEffects(currentTime);
+  updateSystemStatus();
+  updateTemperature();
+  
+  if (showduinoState.circuitFlicker) {
+    timecircuitFlicker();
   }
-
-
-  // Read from Serial Monitor, send to ESP
-  if (Serial.available()) {
-    String msg = Serial.readStringUntil('\n');
-    Serial1.println("@ESP: " + msg);
-    Serial.println("[MEGA] Sent to ESP: " + msg);
+  
+  if (showduinoState.isShocking) {
+    shocking();
   }
-
-  // Read from ESP32, act on commands
-  if (Serial1.available()) {
-    String msg = Serial1.readStringUntil('\n');
-    msg.trim();
-    Serial.println("[MEGA] ESP says: " + msg);
-    handleCommand(msg);  // ← This runs your relay logic!
+  
+  if (showduinoState.isGlitching) {
+    consoleFlicker();
   }
-
-  // === IR Remote Polling ===
-  if (digitalRead(irPin) == LOW) {
-    int code = remote.listen(-1);
-    if (code >= 0) {
-      for (int i = 0; i < 44; i++) {
-        if (buttonCode[i] == code) {
-          Serial.print("[IR] ");
-          Serial.println(irLabels[i]);
-          break;
-        }
-      }
-    }
-  }
-}
-
-
-
-
-
-
-
-
-
-
-
-
-// === END OF LOOP ===
-
-
-
-
-
-
-
-
-
-
-
-// ===============888888888888888888============ WORKING LOGIC Do .Not .Touch! =================8888888======================
-
-void logDHTData() {
-  if (millis() - lastDHTLog >= DHT_INTERVAL) {
-    lastDHTLog = millis();
-
-    float h = dht.readHumidity();
-    float t = dht.readTemperature();
-
-    if (isnan(h) || isnan(t)) {
-      Serial.println("[DHT] Failed to read from sensor!");
-    } else {
-      Serial.print("[DHT] Temp: ");
-      Serial.print(t, 1);
-      Serial.print("°C  Humidity: ");
-      Serial.print(h, 1);
-      Serial.println("%");
-    }
-  }
-}
-
-void checkButtons() {
-  for (int i = 0; i < NUM_BUTTONS; i++) {
-    int reading = digitalRead(buttonPins[i]);
-
-    if (reading != buttonStates[i] && (millis() - lastDebounceTime[i]) > debounceDelay) {
-      lastDebounceTime[i] = millis();
-      buttonStates[i] = reading;
-
-      if (reading == LOW) {
-        if (i <= 6) {
-          // Relays 1–7 (Button 0–6)
-          toggleRelay(i);
-        } else if (i == 11) {
-          // Relay 8 (Button 11)
-          toggleRelay(7);
-        } else {
-          // Buttons A–C (Buttons 7–10)
-          char label = 'A' + (i - 7);  // Maps i=7→A, i=8→B, i=9→C, i=10→D
-          Serial.print("[BTN] Button ");
-          Serial.print(label);
-          Serial.println(" Pressed");
-        }
-      }
-    }
-  }
-}
-void checkSX1509Buttons() {
-  for (int i = 0; i < numSceneButtons; i++) {
-    int pin = sxSceneButtons[i];
-    bool state = io.digitalRead(pin);
-    if (state != sxPrevState[i]) {
-      sxPrevState[i] = state;
-      if (state == LOW) {
-        Serial.print("[MANUAL] Scene Button ");
-        Serial.print(i);
-        Serial.println(" Pressed");
-
-        // 🠖 Send to ESP as a trigger message
-        Serial1.print("SXBTN_");
-        Serial1.print(i);
-        Serial1.println("_TRIGGER");
-      }
-    }
-  }
-}
-
-void toggleRelay(int num) {
-  if (relayUseTimer[num]) {
-    // TIMED MODE: trigger ON for X ms
-    digitalWrite(relayPins[num], HIGH);
-    relayStates[num] = true;
-    relayTimers[num] = millis();
-    Serial.print("[TIMER] RELAY_");
-    Serial.print(num + 1);
-    Serial.println(" ON");
-  } else {
-    // MANUAL MODE: toggle state
-    relayStates[num] = !relayStates[num];
-    digitalWrite(relayPins[num], relayStates[num] ? HIGH : LOW);
-    Serial.print("[MANUAL] RELAY_");
-    Serial.print(num + 1);
-    Serial.print(" ");
-    Serial.println(relayStates[num] ? "ON" : "OFF");
-  }
-}
-void handleCommand(String cmd) {
-  Serial.println(">> CMD: " + cmd);
-
-  if (cmd.startsWith("RELAY_")) {
-    int r = cmd.substring(6, 7).toInt() - 1;
-
-    if (r >= 0 && r < NUM_RELAYS) {
-      if (cmd.endsWith("_ON")) {
-        digitalWrite(relayPins[r], HIGH);
-        relayStates[r] = true;
-        if (relayUseTimer[r]) relayTimers[r] = millis();
-        Serial.print("[OK] RELAY_");
-        Serial.print(r + 1);
-        Serial.println(" ON");
-
-      } else if (cmd.endsWith("_OFF")) {
-        digitalWrite(relayPins[r], LOW);
-        relayStates[r] = false;
-        Serial.print("[OK] RELAY_");
-        Serial.print(r + 1);
-        Serial.println(" OFF");
-
-      } else if (cmd.endsWith("_TIMER_ON")) {
-        relayUseTimer[r] = true;
-        Serial.print("[TIMER] RELAY_");
-        Serial.print(r + 1);
-        Serial.println(" → TIMED");
-
-      } else if (cmd.endsWith("_TIMER_OFF")) {
-        relayUseTimer[r] = false;
-        Serial.print("[TIMER] RELAY_");
-        Serial.print(r + 1);
-        Serial.println(" → MANUAL");
-
-      } else if (cmd.startsWith("SXBTN_") && cmd.endsWith("_TRIGGER")) {
-        int button = cmd.substring(6, cmd.indexOf("_TRIGGER")).toInt();
-        Serial.print("[SX] Remote Scene Trigger for Button ");
-        Serial.println(button);
-
-        // 🎯 Eventually trigger `loadScene(button);`
-      }
-    }
-  }
-
-
-
-  // === Timer Control ===
-  else if (cmd.startsWith("RELAY_") && cmd.endsWith("_TIMER_ON")) {
-    int r = cmd.substring(6, 7).toInt() - 1;
-    if (r >= 0 && r < NUM_RELAYS) {
-      relayUseTimer[r] = true;
-      Serial.print("[OK] RELAY_");
-      Serial.print(r + 1);
-      Serial.println(" TIMED MODE ENABLED");
-    }
-  } else if (cmd.startsWith("RELAY_") && cmd.endsWith("_TIMER_OFF")) {
-    int r = cmd.substring(6, 7).toInt() - 1;
-    if (r >= 0 && r < NUM_RELAYS) {
-      relayUseTimer[r] = false;
-      Serial.print("[OK] RELAY_");
-      Serial.print(r + 1);
-      Serial.println(" TOGGLE MODE ENABLED");
-    }
-  }
-}
-void checkIR() {
-  // IR logic already handled in loop (optional placeholder)
-}
-void checkSerial() {
-  if (Serial.available()) {
-    String cmd = Serial.readStringUntil('\n');
-    cmd.trim();
-    handleCommand(cmd);
-  }
-}
-
-void logVoltageDiagnostics() {
-  float v5V = analogRead(VOLTAGE_5V) * (5.0 / 1023.0);
-  float v3V3 = analogRead(VOLTAGE_3V3) * (5.0 / 1023.0);
-  float vSB = analogRead(STANDBY_POWER) * (5.0 / 1023.0);
-  float pwrOK = analogRead(PWR_OK_PIN) * (5.0 / 1023.0);
-  float v12V = analogRead(VOLTAGE_12V) * voltageMultiplier;
-
-  Serial.println("[VOLTAGE] Diagnostics:");
-  Serial.println("  - 5V Line      : " + String(v5V, 2) + " V");
-  Serial.println("  - 3.3V Line    : " + String(v3V3, 2) + " V");
-  Serial.println("  - 5V Standby   : " + String(vSB, 2) + " V");
-  Serial.println("  - PWR_OK Line  : " + String(pwrOK, 2) + " V");
-  Serial.println("  - 12V Sensor   : " + String(v12V, 2) + " V");
-
-  // Optional: Add warnings
-  if (v5V < 4.5) Serial.println("  ⚠️  WARNING: 5V rail under-voltage!");
-  if (v3V3 < 3.0) Serial.println("  ⚠️  WARNING: 3.3V rail under-voltage!");
-  if (v12V < 11.0) Serial.println("  ⚠️  WARNING: 12V sensor line low!");
+  
+  twinkle();
+  
+  handleButtonInputs();
+  checkSceneButtons();
+  updateRTCHeartbeat();
+  
+  delay(10);
 }
